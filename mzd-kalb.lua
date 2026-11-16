@@ -1,5 +1,5 @@
 -- =====================================================================
--- MzD KALB script
+-- MzD KALB script 
 -- =====================================================================
 
 if setfpscap then pcall(setfpscap, 20) end
@@ -144,7 +144,7 @@ local function spawnPlatformAtPosition(pos)
     safePad.Anchored = true
     safePad.CanCollide = true
     safePad.Material = Enum.Material.SmoothPlastic
-    safePad.Color = Color3.fromRGB(14, 32, 25)
+    safePad.Color = Color3.fromRGB(18, 46, 35)
     safePad.Parent = Workspace
     return safePad
 end
@@ -294,7 +294,7 @@ end
 setupBeachGymWatcher()
 
 -- =====================================================================
--- ULTRA-VOID 3D DESTROYER (Karakter Zichtbaar + Zwarte Lucht Zonder Wolken)
+-- CRASH-SAFE ULTRA-VOID (Zet effecten uit op .Enabled = false i.p.v. slopen)
 -- =====================================================================
 local validBodyParts = {
     ["Head"] = true, ["Torso"] = true, ["HumanoidRootPart"] = true,
@@ -306,22 +306,37 @@ local validBodyParts = {
     ["RightUpperLeg"] = true, ["RightLowerLeg"] = true, ["RightFoot"] = true
 }
 
-local function isEffectClass(inst)
-    return inst:IsA("ParticleEmitter") or inst:IsA("Trail") or inst:IsA("Beam")
-        or inst:IsA("Sparkles") or inst:IsA("Fire") or inst:IsA("Smoke")
-        or inst:IsA("Explosion") or inst:IsA("Highlight")
-        or inst:IsA("PointLight") or inst:IsA("SpotLight") or inst:IsA("SurfaceLight")
-        or inst:IsA("BillboardGui") or inst:IsA("SurfaceGui") or inst:IsA("Sound")
-end
+local trackedEffects = setmetatable({}, {__mode = "k"})
 
-local function stripWorldInstance(inst)
+local function disableVisualOnly(inst)
     if not inst or not inst.Parent then return end
-    if isEffectClass(inst) or inst:IsA("Decal") or inst:IsA("Texture") then
-        pcall(function() inst:Destroy() end)
-    elseif inst:IsA("BasePart") and inst.Name ~= "MzD_SafePlatform" then
-        inst.Transparency = 1
-        inst.CastShadow = false
-    end
+    pcall(function()
+        if inst:IsA("ParticleEmitter") or inst:IsA("Trail") or inst:IsA("Beam")
+            or inst:IsA("Sparkles") or inst:IsA("Fire") or inst:IsA("Smoke")
+            or inst:IsA("Highlight") or inst:IsA("PointLight")
+            or inst:IsA("SpotLight") or inst:IsA("SurfaceLight") then
+            inst.Enabled = false
+            if not trackedEffects[inst] then
+                trackedEffects[inst] = true
+                inst:GetPropertyChangedSignal("Enabled"):Connect(function()
+                    if worldWiped and inst.Enabled then
+                        inst.Enabled = false
+                    end
+                end)
+            end
+        elseif inst:IsA("BillboardGui") or inst:IsA("SurfaceGui") then
+            -- Laat de Gym-teller op Beach Gym zichtbaar, schakel overige popups uit
+            local gm = Workspace:FindFirstChild("Debris") and Workspace.Debris:FindFirstChild("GymMachine")
+            if not (gm and inst:IsDescendantOf(gm)) then
+                inst.Enabled = false
+            end
+        elseif inst:IsA("Sound") then
+            inst.Volume = 0
+        elseif inst:IsA("Clouds") then
+            inst.Enabled = false
+            inst.Cover = 0
+        end
+    end)
 end
 
 local function stripCharacterEffectsOnly(char)
@@ -329,9 +344,8 @@ local function stripCharacterEffectsOnly(char)
 
     local function cleanDesc(desc)
         if not desc or not desc.Parent then return end
-        if isEffectClass(desc) then
-            pcall(function() desc:Destroy() end)
-        elseif desc:IsA("BasePart") then
+        disableVisualOnly(desc)
+        if desc:IsA("BasePart") then
             desc.CastShadow = false
             local isAccessory = desc:FindFirstAncestorWhichIsA("Accessory") ~= nil
             local isTool = desc:FindFirstAncestorWhichIsA("Tool") ~= nil
@@ -347,45 +361,51 @@ local function stripCharacterEffectsOnly(char)
 
     if charEffectConn then charEffectConn:Disconnect() end
     charEffectConn = char.DescendantAdded:Connect(function(desc)
-        if worldWiped then cleanDesc(desc) end
+        if worldWiped then
+            task.defer(cleanDesc, desc)
+        end
     end)
 end
 
-local function applyPitchBlackSky()
+local function applyCleanVoidSky()
     pcall(function()
         Workspace.Terrain:Clear()
         for _, child in ipairs(Workspace.Terrain:GetChildren()) do
-            child:Destroy()
+            disableVisualOnly(child)
         end
     end)
 
     pcall(function()
         Lighting.GlobalShadows = false
-        Lighting.ClockTime = 0
-        Lighting.Brightness = 0
+        Lighting.ClockTime = 12
+        Lighting.Brightness = 0.65
         Lighting.EnvironmentDiffuseScale = 0
         Lighting.EnvironmentSpecularScale = 0
-        Lighting.Ambient = Color3.new(0, 0, 0)
-        Lighting.OutdoorAmbient = Color3.new(0, 0, 0)
-        Lighting.FogColor = Color3.new(0, 0, 0)
-        Lighting.FogStart = 75
-        Lighting.FogEnd = 200
+        Lighting.Ambient = Color3.fromRGB(135, 145, 140)
+        Lighting.OutdoorAmbient = Color3.fromRGB(135, 145, 140)
+        Lighting.FogEnd = 9e9
 
         for _, eff in ipairs(Lighting:GetChildren()) do
-            eff:Destroy()
+            if eff:IsA("Sky") and eff.Name ~= "MzD_CleanVoidSky" then
+                eff:Destroy()
+            elseif eff:IsA("PostEffect") or eff:IsA("Atmosphere") then
+                eff.Enabled = false
+            end
         end
 
-        local blackSky = Instance.new("Sky")
-        blackSky.Name = "MzD_BlackVoidSky"
-        blackSky.CelestialBodiesShown = false
-        blackSky.StarCount = 0
-        blackSky.SkyboxBk = "rbxassetid://0"
-        blackSky.SkyboxDn = "rbxassetid://0"
-        blackSky.SkyboxFt = "rbxassetid://0"
-        blackSky.SkyboxLf = "rbxassetid://0"
-        blackSky.SkyboxRt = "rbxassetid://0"
-        blackSky.SkyboxUp = "rbxassetid://0"
-        blackSky.Parent = Lighting
+        if not Lighting:FindFirstChild("MzD_CleanVoidSky") then
+            local voidSky = Instance.new("Sky")
+            voidSky.Name = "MzD_CleanVoidSky"
+            voidSky.CelestialBodiesShown = false
+            voidSky.StarCount = 0
+            voidSky.SkyboxBk = "rbxassetid://0"
+            voidSky.SkyboxDn = "rbxassetid://0"
+            voidSky.SkyboxFt = "rbxassetid://0"
+            voidSky.SkyboxLf = "rbxassetid://0"
+            voidSky.SkyboxRt = "rbxassetid://0"
+            voidSky.SkyboxUp = "rbxassetid://0"
+            voidSky.Parent = Lighting
+        end
 
         settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
     end)
@@ -394,7 +414,7 @@ end
 local function enableVoidMode()
     if not activeBeachGym then spawnPlatformUnderPlayer(player.Character) end
     stripCharacterEffectsOnly(player.Character)
-    applyPitchBlackSky()
+    applyCleanVoidSky()
 
     if worldWiped then return end
     worldWiped = true
@@ -423,27 +443,42 @@ local function enableVoidMode()
         if not keepWorkspace[obj.Name] and obj ~= char then
             pcall(function() obj:Destroy() end)
         elseif keepWorkspace[obj.Name] and obj.Name ~= "Players" and obj.Name ~= "MzD_SafePlatform" and obj.Name ~= "Debris" and obj.Name ~= "Camera" and obj.Name ~= "Terrain" and obj ~= char then
-            for _, p in ipairs(obj:GetDescendants()) do stripWorldInstance(p) end
+            for _, p in ipairs(obj:GetDescendants()) do
+                disableVisualOnly(p)
+                if p:IsA("BasePart") then
+                    p.Transparency = 1
+                    p.CastShadow = false
+                elseif p:IsA("Decal") or p:IsA("Texture") then
+                    pcall(function() p:Destroy() end)
+                end
+            end
         end
     end
 
+    -- Veilig uitschakelen via task.defer zodat game-scripts nooit crashen
     worldEffectConn = Workspace.DescendantAdded:Connect(function(desc)
-        if not worldWiped then return end
-        if isEffectClass(desc) then
-            pcall(function() desc:Destroy() end)
+        if worldWiped then
+            task.defer(disableVisualOnly, desc)
         end
     end)
 
     terrainConn = Workspace.Terrain.ChildAdded:Connect(function(c)
-        if worldWiped then pcall(function() c:Destroy() end) end
+        if worldWiped then
+            task.defer(disableVisualOnly, c)
+        end
     end)
 
     lightingConn = Lighting.ChildAdded:Connect(function(eff)
-        if worldWiped and eff.Name ~= "MzD_BlackVoidSky" then
-            task.wait()
-            if eff and eff.Parent and eff.Name ~= "MzD_BlackVoidSky" then
-                pcall(function() eff:Destroy() end)
-            end
+        if worldWiped and eff.Name ~= "MzD_CleanVoidSky" then
+            task.defer(function()
+                pcall(function()
+                    if eff:IsA("PostEffect") or eff:IsA("Atmosphere") then
+                        eff.Enabled = false
+                    elseif eff:IsA("Sky") then
+                        eff:Destroy()
+                    end
+                end)
+            end)
         end
     end)
 
@@ -485,14 +520,15 @@ local function enableVoidMode()
         StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, false)
         StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Chat, false)
         StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.EmotesMenu, false)
-        StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false)
     end)
 
     local kickUpgrades = pGui:FindFirstChild("KickUpgrades")
     local popFolder = kickUpgrades and kickUpgrades:FindFirstChild("Pop")
     if popFolder then
         popFolder:ClearAllChildren()
-        popCleanerConn = popFolder.ChildAdded:Connect(function(c) c:Destroy() end)
+        popCleanerConn = popFolder.ChildAdded:Connect(function(c)
+            task.defer(function() pcall(function() c:Destroy() end) end)
+        end)
     end
 end
 
@@ -545,7 +581,6 @@ MainStroke.Color = NeonGreen
 MainStroke.Thickness = 1.8
 MainStroke.Transparency = 0.1
 
--- TopBar (46px hoog, grote dikke letters)
 local TopBar = Instance.new("Frame", MainFrame)
 TopBar.Size = UDim2.new(1, 0, 0, 46)
 TopBar.BackgroundColor3 = PanelCyberBg
@@ -587,7 +622,6 @@ TitleLabel.TextColor3 = TextPure
 TitleLabel.TextSize = 17
 TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
 
--- Zoom-knop (1.0x -> 1.2x -> 1.35x)
 local ZoomBtn = Instance.new("TextButton", TopBar)
 ZoomBtn.Size = UDim2.new(0, 42, 0, 30)
 ZoomBtn.Position = UDim2.new(1, -114, 0.5, -15)
@@ -627,7 +661,6 @@ CloseBtn.TextColor3 = TextPure
 CloseBtn.TextSize = 14
 Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 7)
 
--- Stat Cards (Grote cijfers, dikke labels)
 local CardsContainer = Instance.new("Frame", MainFrame)
 CardsContainer.Size = UDim2.new(1, -24, 0, 66)
 CardsContainer.Position = UDim2.new(0, 12, 0, 54)
@@ -674,7 +707,6 @@ Val2xLabel = createStatCard(0, "2X BOOST", Color3.fromRGB(195, 110, 255))
 Val5xLabel = createStatCard(0.341, "5X BOOST", Color3.fromRGB(255, 160, 45))
 Val10xLabel = createStatCard(0.682, "10X BOOST", NeonGreen)
 
--- Toggle Rows (Enkele regel, 14px GothamBold in puur wit voor maximale leesbaarheid)
 local function createToggleRow(labelText, yPos, defaultState, callback)
     local Row = Instance.new("Frame", MainFrame)
     Row.Size = UDim2.new(1, -24, 0, 34)
@@ -772,7 +804,6 @@ VoidBtn.MouseButton1Click:Connect(function()
     VoidBtn.BackgroundColor3 = Color3.fromRGB(18, 175, 105)
 end)
 
--- Grote leesbare Footer (blijft ook zichtbaar als de HUD is ingeklapt)
 local Footer = Instance.new("Frame", MainFrame)
 Footer.Size = UDim2.new(1, 0, 0, 24)
 Footer.Position = UDim2.new(0, 0, 1, -24)
