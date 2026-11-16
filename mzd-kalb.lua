@@ -1,5 +1,5 @@
 -- =====================================================================
--- MzD KALB script
+-- MzD KALB script - Training script optimized
 -- =====================================================================
 
 if setfpscap then pcall(setfpscap, 20) end
@@ -602,7 +602,6 @@ local function stepAutoLift(doClick, ignorePullCooldown)
             return
         end
 
-        -- Geef Tool.Equipped 0.12s om te initialiseren voordat Activate vuurt
         if tick() - lastEquipTick < 0.12 then return end
 
         pcall(function() tool:Activate() end)
@@ -711,46 +710,48 @@ table.insert(conns, GuiService.ErrorMessageChanged:Connect(function(msg)
 end))
 
 -- =====================================================================
--- BEACH GYM TELEPORT + TERUG OP EIGEN PLATFORM NA DESPAWN
+-- BEACH GYM TELEPORT (Zandplateau + Gele Hitbox Zone + Anchored Stabilisatie)
 -- =====================================================================
-local function getBeachCenterSurface(gymObj)
-    local floorPart = nil
-    local bestArea = 0
+local function getBeachGymTargetCFrame(gymObj, char)
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil end
+
+    local sandFloor = nil
+    local bestFloorArea = 0
+    local hitboxZone = nil
+    local bestZoneVol = 0
+
     for _, desc in ipairs(gymObj:GetDescendants()) do
-        if desc:IsA("BasePart") and desc.CanCollide then
-            local area = desc.Size.X * desc.Size.Z
-            if area > bestArea then
-                bestArea = area
-                floorPart = desc
+        if desc:IsA("BasePart") then
+            if desc.CanCollide and desc.Size.Y < 5 then
+                local area = desc.Size.X * desc.Size.Z
+                if area > bestFloorArea then
+                    bestFloorArea = area
+                    sandFloor = desc
+                end
+            elseif not desc.CanCollide then
+                local vol = desc.Size.X * desc.Size.Y * desc.Size.Z
+                if vol > bestZoneVol then
+                    bestZoneVol = vol
+                    hitboxZone = desc
+                end
             end
         end
     end
-    if not floorPart and gymObj:IsA("BasePart") then floorPart = gymObj end
 
-    local cf, size
-    if gymObj:IsA("Model") then
-        cf, size = gymObj:GetBoundingBox()
-    elseif floorPart then
-        cf, size = floorPart.CFrame, floorPart.Size
-    else
-        return nil
-    end
+    local refPart = hitboxZone or sandFloor
+    local bboxCf = gymObj:IsA("Model") and gymObj:GetBoundingBox() or nil
+    local centerX = refPart and refPart.Position.X or (bboxCf and bboxCf.Position.X)
+    local centerZ = refPart and refPart.Position.Z or (bboxCf and bboxCf.Position.Z)
+    if not centerX or not centerZ then return nil end
 
-    local cx = floorPart and floorPart.Position.X or cf.Position.X
-    local cz = floorPart and floorPart.Position.Z or cf.Position.Z
+    local floorTopY = sandFloor and (sandFloor.Position.Y + sandFloor.Size.Y * 0.5)
+        or (refPart and (refPart.Position.Y - refPart.Size.Y * 0.5) or (bboxCf and bboxCf.Position.Y))
 
-    local params = RaycastParams.new()
-    params.FilterType = Enum.RaycastFilterType.Include
-    params.FilterDescendantsInstances = {gymObj}
-
-    local origin = Vector3.new(cx, cf.Position.Y + size.Y + 10, cz)
-    local hit = Workspace:Raycast(origin, Vector3.new(0, -(size.Y * 2 + 25), 0), params)
-    if hit then return hit.Position end
-
-    if floorPart then
-        return Vector3.new(cx, floorPart.Position.Y + (floorPart.Size.Y * 0.5), cz)
-    end
-    return cf.Position
+    local hipHeight = hum and hum.HipHeight or 2
+    local standY = floorTopY + hipHeight + (hrp.Size.Y * 0.5) + 0.15
+    return CFrame.new(centerX + 2, standY, centerZ + 2)
 end
 
 local function pulseTouchOnGym(char, gymObj)
@@ -759,6 +760,8 @@ local function pulseTouchOnGym(char, gymObj)
         if desc:IsA("TouchTransmitter") and desc.Parent and desc.Parent:IsA("BasePart") then
             for _, bodyPart in ipairs(char:GetChildren()) do
                 if bodyPart:IsA("BasePart") then
+                    pcall(firetouchinterest, bodyPart, desc.Parent, 0)
+                    pcall(firetouchinterest, bodyPart, desc.Parent, 1)
                     pcall(firetouchinterest, bodyPart, desc.Parent, 0)
                 end
             end
@@ -776,27 +779,33 @@ local function teleportToBeachGym(gymObj)
     task.wait(0.15)
     if not gymObj or not gymObj.Parent then return end
 
-    local surfacePos = getBeachCenterSurface(gymObj)
-    if not surfacePos then return end
-
     local char = player.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     if not hrp then return end
 
+    local targetCFrame = getBeachGymTargetCFrame(gymObj, char)
+    if not targetCFrame then return end
+
     removeSafePlatform()
     activeBeachGym = gymObj
 
-    local hipHeight = hum and hum.HipHeight or 2
-    local targetPos = surfacePos + Vector3.new(0, hipHeight + (hrp.Size.Y * 0.5) + 0.05, 0)
-    hrp.CFrame = CFrame.new(targetPos)
-    hrp.AssemblyLinearVelocity = Vector3.new(0, -12, 0)
+    -- Teleporteer en anker 0.25s zodat je karakter niet door het zand zakt
+    hrp.Anchored = true
+    hrp.CFrame = targetCFrame
+    hrp.AssemblyLinearVelocity = Vector3.zero
+    task.wait(0.25)
+    if hrp and hrp.Parent then
+        hrp.CFrame = targetCFrame
+        hrp.Anchored = false
+    end
 
     pulseTouchOnGym(char, gymObj)
 
     task.spawn(function()
-        task.wait(0.12)
-        if activeBeachGym == gymObj and hum and hum.Parent then
+        if activeBeachGym == gymObj and hum and hum.Parent and hrp and hrp.Parent then
+            hum:MoveTo(hrp.Position + Vector3.new(1.5, 0, 0))
+            task.wait(0.15)
             hum.Jump = true
         end
         while activeBeachGym == gymObj and gymObj.Parent and autoBeachGym do
