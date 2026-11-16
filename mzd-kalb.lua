@@ -1,5 +1,5 @@
 -- =====================================================================
--- MzD KALB script - Ultra-Void v2.2 (Center Island Landing + Catch)
+-- MzD KALB script
 -- =====================================================================
 
 if setfpscap then pcall(setfpscap, 20) end
@@ -50,7 +50,8 @@ local lastBonusSpawnTick = 0
 local activeBeachGym = nil
 
 local afkConnection, errorConnection, bonusConn, popCleanerConn = nil, nil, nil, nil
-local playerCleanerConn, debrisCleanerConn, respawnConn, worldEffectConn, charEffectConn = nil, nil, nil, nil, nil
+local playerCleanerConn, debrisCleanerConn, respawnConn = nil, nil, nil
+local worldEffectConn, charEffectConn, lightingConn, terrainConn = nil, nil, nil, nil
 local gymWatchConns = {}
 local Val2xLabel, Val5xLabel, Val10xLabel, FooterStatsLabel = nil, nil, nil, nil
 
@@ -59,7 +60,7 @@ local function updateDashboard()
     if Val5xLabel then Val5xLabel.Text = tostring(count5x) end
     if Val10xLabel then Val10xLabel.Text = tostring(count10x) end
     if FooterStatsLabel then
-        FooterStatsLabel.Text = string.format("TOT: %d  |  GYM: %d  |  %dms  |  AFK: %d  |  20 FPS", totalBonusCount, gymTpCount, lastReactionMs, afkPulses)
+        FooterStatsLabel.Text = string.format("TOT: %d  |  GYM: %d  |  AFK: %d  |  20 FPS", totalBonusCount, gymTpCount, afkPulses)
     end
 end
 
@@ -143,7 +144,7 @@ local function spawnPlatformAtPosition(pos)
     safePad.Anchored = true
     safePad.CanCollide = true
     safePad.Material = Enum.Material.SmoothPlastic
-    safePad.Color = Color3.fromRGB(10, 22, 18)
+    safePad.Color = Color3.fromRGB(14, 32, 25)
     safePad.Parent = Workspace
     return safePad
 end
@@ -186,7 +187,6 @@ local function getBeachCenterSurface(gymObj)
     local cx = floorPart and floorPart.Position.X or cf.Position.X
     local cz = floorPart and floorPart.Position.Z or cf.Position.Z
 
-    -- Raycast exact naar het midden van de eilandvloer
     local params = RaycastParams.new()
     params.FilterType = Enum.RaycastFilterType.Include
     params.FilterDescendantsInstances = {gymObj}
@@ -235,7 +235,6 @@ local function teleportToBeachGym(gymObj)
     removeSafePlatform()
     activeBeachGym = gymObj
 
-    -- Zet je karakter strak op het midden van het eiland en druk direct op de vloer
     local hipHeight = hum and hum.HipHeight or 2
     local targetPos = surfacePos + Vector3.new(0, hipHeight + (hrp.Size.Y * 0.5) + 0.05, 0)
     hrp.CFrame = CFrame.new(targetPos)
@@ -243,7 +242,6 @@ local function teleportToBeachGym(gymObj)
 
     pulseTouchOnGym(char, gymObj)
 
-    -- Korte micro-landing zodat native physics direct registreert dat je op het eiland staat
     task.spawn(function()
         task.wait(0.12)
         if activeBeachGym == gymObj and hum and hum.Parent then
@@ -296,16 +294,29 @@ end
 setupBeachGymWatcher()
 
 -- =====================================================================
--- ULTRA-VOID 3D & CHARACTER EFFECT DESTROYER
+-- ULTRA-VOID 3D DESTROYER (Karakter Zichtbaar + Zwarte Lucht Zonder Wolken)
 -- =====================================================================
-local function stripVisualInstance(inst)
-    if not inst or not inst.Parent then return end
-    if inst:IsA("ParticleEmitter") or inst:IsA("Trail") or inst:IsA("Beam")
+local validBodyParts = {
+    ["Head"] = true, ["Torso"] = true, ["HumanoidRootPart"] = true,
+    ["Left Arm"] = true, ["Right Arm"] = true, ["Left Leg"] = true, ["Right Leg"] = true,
+    ["UpperTorso"] = true, ["LowerTorso"] = true,
+    ["LeftUpperArm"] = true, ["LeftLowerArm"] = true, ["LeftHand"] = true,
+    ["RightUpperArm"] = true, ["RightLowerArm"] = true, ["RightHand"] = true,
+    ["LeftUpperLeg"] = true, ["LeftLowerLeg"] = true, ["LeftFoot"] = true,
+    ["RightUpperLeg"] = true, ["RightLowerLeg"] = true, ["RightFoot"] = true
+}
+
+local function isEffectClass(inst)
+    return inst:IsA("ParticleEmitter") or inst:IsA("Trail") or inst:IsA("Beam")
         or inst:IsA("Sparkles") or inst:IsA("Fire") or inst:IsA("Smoke")
         or inst:IsA("Explosion") or inst:IsA("Highlight")
         or inst:IsA("PointLight") or inst:IsA("SpotLight") or inst:IsA("SurfaceLight")
-        or inst:IsA("BillboardGui") or inst:IsA("SurfaceGui")
-        or inst:IsA("Decal") or inst:IsA("Texture") or inst:IsA("Sound") then
+        or inst:IsA("BillboardGui") or inst:IsA("SurfaceGui") or inst:IsA("Sound")
+end
+
+local function stripWorldInstance(inst)
+    if not inst or not inst.Parent then return end
+    if isEffectClass(inst) or inst:IsA("Decal") or inst:IsA("Texture") then
         pcall(function() inst:Destroy() end)
     elseif inst:IsA("BasePart") and inst.Name ~= "MzD_SafePlatform" then
         inst.Transparency = 1
@@ -313,18 +324,78 @@ local function stripVisualInstance(inst)
     end
 end
 
-local function stripCharacterVisuals(char)
+local function stripCharacterEffectsOnly(char)
     if not char then return end
-    for _, desc in ipairs(char:GetDescendants()) do stripVisualInstance(desc) end
+
+    local function cleanDesc(desc)
+        if not desc or not desc.Parent then return end
+        if isEffectClass(desc) then
+            pcall(function() desc:Destroy() end)
+        elseif desc:IsA("BasePart") then
+            desc.CastShadow = false
+            local isAccessory = desc:FindFirstAncestorWhichIsA("Accessory") ~= nil
+            local isTool = desc:FindFirstAncestorWhichIsA("Tool") ~= nil
+            if not validBodyParts[desc.Name] and not isAccessory and not isTool then
+                desc.Transparency = 1
+            end
+        end
+    end
+
+    for _, desc in ipairs(char:GetDescendants()) do
+        cleanDesc(desc)
+    end
+
     if charEffectConn then charEffectConn:Disconnect() end
     charEffectConn = char.DescendantAdded:Connect(function(desc)
-        if worldWiped then stripVisualInstance(desc) end
+        if worldWiped then cleanDesc(desc) end
+    end)
+end
+
+local function applyPitchBlackSky()
+    pcall(function()
+        Workspace.Terrain:Clear()
+        for _, child in ipairs(Workspace.Terrain:GetChildren()) do
+            child:Destroy()
+        end
+    end)
+
+    pcall(function()
+        Lighting.GlobalShadows = false
+        Lighting.ClockTime = 0
+        Lighting.Brightness = 0
+        Lighting.EnvironmentDiffuseScale = 0
+        Lighting.EnvironmentSpecularScale = 0
+        Lighting.Ambient = Color3.new(0, 0, 0)
+        Lighting.OutdoorAmbient = Color3.new(0, 0, 0)
+        Lighting.FogColor = Color3.new(0, 0, 0)
+        Lighting.FogStart = 75
+        Lighting.FogEnd = 200
+
+        for _, eff in ipairs(Lighting:GetChildren()) do
+            eff:Destroy()
+        end
+
+        local blackSky = Instance.new("Sky")
+        blackSky.Name = "MzD_BlackVoidSky"
+        blackSky.CelestialBodiesShown = false
+        blackSky.StarCount = 0
+        blackSky.SkyboxBk = "rbxassetid://0"
+        blackSky.SkyboxDn = "rbxassetid://0"
+        blackSky.SkyboxFt = "rbxassetid://0"
+        blackSky.SkyboxLf = "rbxassetid://0"
+        blackSky.SkyboxRt = "rbxassetid://0"
+        blackSky.SkyboxUp = "rbxassetid://0"
+        blackSky.Parent = Lighting
+
+        settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
     end)
 end
 
 local function enableVoidMode()
     if not activeBeachGym then spawnPlatformUnderPlayer(player.Character) end
-    stripCharacterVisuals(player.Character)
+    stripCharacterEffectsOnly(player.Character)
+    applyPitchBlackSky()
+
     if worldWiped then return end
     worldWiped = true
 
@@ -332,7 +403,7 @@ local function enableVoidMode()
     respawnConn = player.CharacterAdded:Connect(function(newChar)
         if worldWiped then
             task.wait(0.15)
-            stripCharacterVisuals(newChar)
+            stripCharacterEffectsOnly(newChar)
             if activeBeachGym and activeBeachGym:IsDescendantOf(Workspace) then
                 handledGyms[activeBeachGym] = nil
                 teleportToBeachGym(activeBeachGym)
@@ -352,16 +423,27 @@ local function enableVoidMode()
         if not keepWorkspace[obj.Name] and obj ~= char then
             pcall(function() obj:Destroy() end)
         elseif keepWorkspace[obj.Name] and obj.Name ~= "Players" and obj.Name ~= "MzD_SafePlatform" and obj.Name ~= "Debris" and obj.Name ~= "Camera" and obj.Name ~= "Terrain" and obj ~= char then
-            for _, p in ipairs(obj:GetDescendants()) do stripVisualInstance(p) end
+            for _, p in ipairs(obj:GetDescendants()) do stripWorldInstance(p) end
         end
     end
 
     worldEffectConn = Workspace.DescendantAdded:Connect(function(desc)
         if not worldWiped then return end
-        if desc:IsA("ParticleEmitter") or desc:IsA("Trail") or desc:IsA("Beam")
-            or desc:IsA("Sparkles") or desc:IsA("Fire") or desc:IsA("Smoke")
-            or desc:IsA("BillboardGui") or desc:IsA("Highlight") or desc:IsA("Sound") then
+        if isEffectClass(desc) then
             pcall(function() desc:Destroy() end)
+        end
+    end)
+
+    terrainConn = Workspace.Terrain.ChildAdded:Connect(function(c)
+        if worldWiped then pcall(function() c:Destroy() end) end
+    end)
+
+    lightingConn = Lighting.ChildAdded:Connect(function(eff)
+        if worldWiped and eff.Name ~= "MzD_BlackVoidSky" then
+            task.wait()
+            if eff and eff.Parent and eff.Name ~= "MzD_BlackVoidSky" then
+                pcall(function() eff:Destroy() end)
+            end
         end
     end)
 
@@ -381,26 +463,23 @@ local function enableVoidMode()
     local playersFolder = Workspace:FindFirstChild("Players")
     if playersFolder then
         for _, pModel in ipairs(playersFolder:GetChildren()) do
-            if pModel.Name ~= player.Name then pcall(function() pModel:Destroy() end) end
+            if pModel.Name ~= player.Name then
+                pcall(function() pModel:Destroy() end)
+            else
+                stripCharacterEffectsOnly(pModel)
+            end
         end
         playerCleanerConn = playersFolder.ChildAdded:Connect(function(pModel)
-            if worldWiped and pModel.Name ~= player.Name then
+            if worldWiped then
                 task.wait()
-                pcall(function() pModel:Destroy() end)
+                if pModel.Name ~= player.Name then
+                    pcall(function() pModel:Destroy() end)
+                else
+                    stripCharacterEffectsOnly(pModel)
+                end
             end
         end)
     end
-
-    pcall(function()
-        Workspace.Terrain:Clear()
-        Lighting.GlobalShadows = false
-        Lighting.FogEnd = 9e9
-        Lighting.Brightness = 0
-        Lighting.Ambient = Color3.new(0, 0, 0)
-        Lighting.OutdoorAmbient = Color3.new(0, 0, 0)
-        for _, eff in ipairs(Lighting:GetChildren()) do eff:Destroy() end
-        settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
-    end)
 
     pcall(function()
         StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, false)
@@ -418,36 +497,39 @@ local function enableVoidMode()
 end
 
 -- =====================================================================
--- FUTURISTISCHE CYBER-GROENE HUD & CUSTOM MzD LOGO
+-- HD HIGH-CONTRAST HUD (Speciaal gebouwd voor 676x380 & lage DPI)
 -- =====================================================================
-local fullHeight, guiWidth = 452, 332
+local fullHeight, minHeight, guiWidth = 342, 70, 390
 local NeonGreen    = Color3.fromRGB(0, 255, 145)
-local EmeraldGlow  = Color3.fromRGB(16, 210, 120)
-local DeepCyberBg  = Color3.fromRGB(7, 13, 11)
-local PanelCyberBg = Color3.fromRGB(11, 20, 17)
-local CardCyberBg  = Color3.fromRGB(13, 24, 20)
-local TextPrimary  = Color3.fromRGB(238, 255, 247)
-local TextMuted    = Color3.fromRGB(115, 175, 148)
+local EmeraldGlow  = Color3.fromRGB(16, 215, 125)
+local DeepCyberBg  = Color3.fromRGB(6, 11, 9)
+local PanelCyberBg = Color3.fromRGB(12, 22, 18)
+local CardCyberBg  = Color3.fromRGB(15, 28, 23)
+local TextPure     = Color3.fromRGB(255, 255, 255)
 
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = uiName
 ScreenGui.ResetOnSpawn = false
+ScreenGui.IgnoreGuiInset = true
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.Parent = (gethui and gethui()) or CoreGui
 
 local GlowAura = Instance.new("Frame")
 GlowAura.Size = UDim2.new(0, guiWidth + 6, 0, fullHeight + 6)
-GlowAura.Position = UDim2.new(0.5, -((guiWidth + 6) / 2), 0.21, 0)
+GlowAura.Position = UDim2.new(0.5, -((guiWidth + 6) / 2), 0.5, -((fullHeight + 6) / 2))
 GlowAura.BackgroundColor3 = NeonGreen
-GlowAura.BackgroundTransparency = 0.88
+GlowAura.BackgroundTransparency = 0.85
 GlowAura.BorderSizePixel = 0
 GlowAura.Parent = ScreenGui
-Instance.new("UICorner", GlowAura).CornerRadius = UDim.new(0, 16)
+Instance.new("UICorner", GlowAura).CornerRadius = UDim.new(0, 14)
+
+local UiScaler = Instance.new("UIScale", GlowAura)
+UiScaler.Scale = 1.0
 
 local AuraStroke = Instance.new("UIStroke", GlowAura)
 AuraStroke.Color = NeonGreen
 AuraStroke.Thickness = 2
-AuraStroke.Transparency = 0.65
+AuraStroke.Transparency = 0.45
 
 local MainFrame = Instance.new("Frame")
 MainFrame.Size = UDim2.new(0, guiWidth, 0, fullHeight)
@@ -456,229 +538,175 @@ MainFrame.BackgroundColor3 = DeepCyberBg
 MainFrame.BorderSizePixel = 0
 MainFrame.ClipsDescendants = true
 MainFrame.Parent = GlowAura
-Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 14)
+Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 12)
 
 local MainStroke = Instance.new("UIStroke", MainFrame)
 MainStroke.Color = NeonGreen
-MainStroke.Thickness = 1.6
-MainStroke.Transparency = 0.15
+MainStroke.Thickness = 1.8
+MainStroke.Transparency = 0.1
 
-local UIGradient = Instance.new("UIGradient", MainFrame)
-UIGradient.Color = ColorSequence.new({
-    ColorSequenceKeypoint.new(0, Color3.fromRGB(14, 28, 22)),
-    ColorSequenceKeypoint.new(0.45, Color3.fromRGB(8, 15, 13)),
-    ColorSequenceKeypoint.new(1, Color3.fromRGB(5, 10, 9))
-})
-UIGradient.Rotation = 55
-
-local TopBar = Instance.new("Frame")
-TopBar.Size = UDim2.new(1, 0, 0, 54)
+-- TopBar (46px hoog, grote dikke letters)
+local TopBar = Instance.new("Frame", MainFrame)
+TopBar.Size = UDim2.new(1, 0, 0, 46)
 TopBar.BackgroundColor3 = PanelCyberBg
 TopBar.BorderSizePixel = 0
-TopBar.Parent = MainFrame
 
 local TopDivider = Instance.new("Frame", TopBar)
-TopDivider.Size = UDim2.new(1, 0, 0, 1)
-TopDivider.Position = UDim2.new(0, 0, 1, -1)
+TopDivider.Size = UDim2.new(1, 0, 0, 2)
+TopDivider.Position = UDim2.new(0, 0, 1, -2)
 TopDivider.BackgroundColor3 = NeonGreen
-TopDivider.BackgroundTransparency = 0.45
+TopDivider.BackgroundTransparency = 0.35
 TopDivider.BorderSizePixel = 0
 
 local LogoHolder = Instance.new("Frame", TopBar)
-LogoHolder.Size = UDim2.new(0, 38, 0, 38)
-LogoHolder.Position = UDim2.new(0, 12, 0.5, -19)
-LogoHolder.BackgroundColor3 = Color3.fromRGB(10, 26, 20)
+LogoHolder.Size = UDim2.new(0, 42, 0, 32)
+LogoHolder.Position = UDim2.new(0, 10, 0.5, -16)
+LogoHolder.BackgroundColor3 = Color3.fromRGB(10, 32, 24)
 LogoHolder.BorderSizePixel = 0
-Instance.new("UICorner", LogoHolder).CornerRadius = UDim.new(0, 9)
+Instance.new("UICorner", LogoHolder).CornerRadius = UDim.new(0, 8)
 
 local LogoStroke = Instance.new("UIStroke", LogoHolder)
 LogoStroke.Color = NeonGreen
 LogoStroke.Thickness = 1.6
 
 local LogoTextM = Instance.new("TextLabel", LogoHolder)
-LogoTextM.Size = UDim2.new(1, 0, 0, 22)
-LogoTextM.Position = UDim2.new(0, 0, 0, 4)
+LogoTextM.Size = UDim2.new(1, 0, 1, 0)
 LogoTextM.BackgroundTransparency = 1
 LogoTextM.Font = Enum.Font.GothamBlack
 LogoTextM.Text = "MzD"
-LogoTextM.TextColor3 = Color3.fromRGB(245, 255, 250)
-LogoTextM.TextSize = 13
-
-local LogoSubTag = Instance.new("TextLabel", LogoHolder)
-LogoSubTag.Size = UDim2.new(1, 0, 0, 10)
-LogoSubTag.Position = UDim2.new(0, 0, 0, 23)
-LogoSubTag.BackgroundTransparency = 1
-LogoSubTag.Font = Enum.Font.Code
-LogoSubTag.Text = "CORE"
-LogoSubTag.TextColor3 = NeonGreen
-LogoSubTag.TextSize = 8
+LogoTextM.TextColor3 = NeonGreen
+LogoTextM.TextSize = 15
 
 local TitleLabel = Instance.new("TextLabel", TopBar)
-TitleLabel.Size = UDim2.new(1, -128, 0, 20)
-TitleLabel.Position = UDim2.new(0, 58, 0, 9)
+TitleLabel.Size = UDim2.new(1, -178, 1, 0)
+TitleLabel.Position = UDim2.new(0, 60, 0, 0)
 TitleLabel.BackgroundTransparency = 1
 TitleLabel.Font = Enum.Font.GothamBlack
-TitleLabel.Text = "MzD KALB // SYSTEM"
-TitleLabel.TextColor3 = TextPrimary
-TitleLabel.TextSize = 14
+TitleLabel.Text = "MzD KALB"
+TitleLabel.TextColor3 = TextPure
+TitleLabel.TextSize = 17
 TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
 
-local SubTitleLabel = Instance.new("TextLabel", TopBar)
-SubTitleLabel.Size = UDim2.new(1, -128, 0, 14)
-SubTitleLabel.Position = UDim2.new(0, 58, 0, 29)
-SubTitleLabel.BackgroundTransparency = 1
-SubTitleLabel.Font = Enum.Font.Code
-SubTitleLabel.Text = "ULTRA-VOID • 20 FPS LOCK"
-SubTitleLabel.TextColor3 = EmeraldGlow
-SubTitleLabel.TextSize = 10
-SubTitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+-- Zoom-knop (1.0x -> 1.2x -> 1.35x)
+local ZoomBtn = Instance.new("TextButton", TopBar)
+ZoomBtn.Size = UDim2.new(0, 42, 0, 30)
+ZoomBtn.Position = UDim2.new(1, -114, 0.5, -15)
+ZoomBtn.BackgroundColor3 = Color3.fromRGB(18, 42, 33)
+ZoomBtn.Font = Enum.Font.GothamBlack
+ZoomBtn.Text = "1.0x"
+ZoomBtn.TextColor3 = NeonGreen
+ZoomBtn.TextSize = 13
+Instance.new("UICorner", ZoomBtn).CornerRadius = UDim.new(0, 7)
 
-task.spawn(function()
-    while GlowAura and GlowAura.Parent do
-        TweenService:Create(AuraStroke, TweenInfo.new(1.4, Enum.EasingStyle.Sine), {Transparency = 0.25}):Play()
-        TweenService:Create(LogoStroke, TweenInfo.new(1.4, Enum.EasingStyle.Sine), {Transparency = 0.45}):Play()
-        task.wait(1.4)
-        if not GlowAura or not GlowAura.Parent then break end
-        TweenService:Create(AuraStroke, TweenInfo.new(1.4, Enum.EasingStyle.Sine), {Transparency = 0.78}):Play()
-        TweenService:Create(LogoStroke, TweenInfo.new(1.4, Enum.EasingStyle.Sine), {Transparency = 0.05}):Play()
-        task.wait(1.4)
-    end
+local zoomLevels = {1.0, 1.2, 1.35}
+local zoomIdx = 1
+ZoomBtn.MouseButton1Click:Connect(function()
+    zoomIdx = (zoomIdx % #zoomLevels) + 1
+    local newScale = zoomLevels[zoomIdx]
+    ZoomBtn.Text = string.format("%.1fx", newScale)
+    TweenService:Create(UiScaler, TweenInfo.new(0.15), {Scale = newScale}):Play()
 end)
 
 local MinBtn = Instance.new("TextButton", TopBar)
-MinBtn.Size = UDim2.new(0, 28, 0, 28)
-MinBtn.Position = UDim2.new(1, -68, 0.5, -14)
-MinBtn.BackgroundColor3 = Color3.fromRGB(16, 34, 27)
-MinBtn.Font = Enum.Font.GothamBold
+MinBtn.Size = UDim2.new(0, 30, 0, 30)
+MinBtn.Position = UDim2.new(1, -68, 0.5, -15)
+MinBtn.BackgroundColor3 = Color3.fromRGB(18, 42, 33)
+MinBtn.Font = Enum.Font.GothamBlack
 MinBtn.Text = "-"
 MinBtn.TextColor3 = NeonGreen
-MinBtn.TextSize = 16
+MinBtn.TextSize = 18
 Instance.new("UICorner", MinBtn).CornerRadius = UDim.new(0, 7)
 
 local CloseBtn = Instance.new("TextButton", TopBar)
-CloseBtn.Size = UDim2.new(0, 28, 0, 28)
-CloseBtn.Position = UDim2.new(1, -34, 0.5, -14)
-CloseBtn.BackgroundColor3 = Color3.fromRGB(165, 35, 48)
-CloseBtn.Font = Enum.Font.GothamBold
+CloseBtn.Size = UDim2.new(0, 30, 0, 30)
+CloseBtn.Position = UDim2.new(1, -34, 0.5, -15)
+CloseBtn.BackgroundColor3 = Color3.fromRGB(185, 35, 50)
+CloseBtn.Font = Enum.Font.GothamBlack
 CloseBtn.Text = "X"
-CloseBtn.TextColor3 = Color3.new(1, 1, 1)
-CloseBtn.TextSize = 12
+CloseBtn.TextColor3 = TextPure
+CloseBtn.TextSize = 14
 Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 7)
 
-local Section1Title = Instance.new("TextLabel", MainFrame)
-Section1Title.Size = UDim2.new(1, -28, 0, 16)
-Section1Title.Position = UDim2.new(0, 14, 0, 62)
-Section1Title.BackgroundTransparency = 1
-Section1Title.Font = Enum.Font.Code
-Section1Title.Text = "> MULTIPLIER TELEMETRIE [VERIFIED]"
-Section1Title.TextColor3 = TextMuted
-Section1Title.TextSize = 10
-Section1Title.TextXAlignment = Enum.TextXAlignment.Left
-
+-- Stat Cards (Grote cijfers, dikke labels)
 local CardsContainer = Instance.new("Frame", MainFrame)
-CardsContainer.Size = UDim2.new(1, -28, 0, 70)
-CardsContainer.Position = UDim2.new(0, 14, 0, 82)
+CardsContainer.Size = UDim2.new(1, -24, 0, 66)
+CardsContainer.Position = UDim2.new(0, 12, 0, 54)
 CardsContainer.BackgroundTransparency = 1
 
 local function createStatCard(xScale, badgeText, accentColor)
     local Card = Instance.new("Frame", CardsContainer)
-    Card.Size = UDim2.new(0.315, 0, 1, 0)
+    Card.Size = UDim2.new(0.318, 0, 1, 0)
     Card.Position = UDim2.new(xScale, 0, 0, 0)
     Card.BackgroundColor3 = CardCyberBg
     Card.BorderSizePixel = 0
-    Instance.new("UICorner", Card).CornerRadius = UDim.new(0, 10)
+    Instance.new("UICorner", Card).CornerRadius = UDim.new(0, 9)
 
     local CStroke = Instance.new("UIStroke", Card)
     CStroke.Color = accentColor
-    CStroke.Thickness = 1.3
-    CStroke.Transparency = 0.35
-
-    local TopAccent = Instance.new("Frame", Card)
-    TopAccent.Size = UDim2.new(0.65, 0, 0, 2)
-    TopAccent.Position = UDim2.new(0.175, 0, 0, 0)
-    TopAccent.BackgroundColor3 = accentColor
-    TopAccent.BorderSizePixel = 0
+    CStroke.Thickness = 1.6
+    CStroke.Transparency = 0.2
 
     local BadgeLabel = Instance.new("TextLabel", Card)
-    BadgeLabel.Size = UDim2.new(1, 0, 0, 20)
-    BadgeLabel.Position = UDim2.new(0, 0, 0, 8)
+    BadgeLabel.Size = UDim2.new(1, 0, 0, 22)
+    BadgeLabel.Position = UDim2.new(0, 0, 0, 5)
     BadgeLabel.BackgroundTransparency = 1
-    BadgeLabel.Font = Enum.Font.GothamBold
+    BadgeLabel.Font = Enum.Font.GothamBlack
     BadgeLabel.Text = badgeText
     BadgeLabel.TextColor3 = accentColor
-    BadgeLabel.TextSize = 12
+    BadgeLabel.TextSize = 13
 
     local ValueLabel = Instance.new("TextLabel", Card)
-    ValueLabel.Size = UDim2.new(1, -8, 0, 28)
-    ValueLabel.Position = UDim2.new(0, 4, 0, 31)
+    ValueLabel.Size = UDim2.new(1, -8, 0, 32)
+    ValueLabel.Position = UDim2.new(0, 4, 0, 27)
     ValueLabel.BackgroundTransparency = 1
     ValueLabel.Font = Enum.Font.GothamBlack
     ValueLabel.Text = "0"
-    ValueLabel.TextColor3 = TextPrimary
+    ValueLabel.TextColor3 = TextPure
     ValueLabel.TextScaled = true
 
     local SizeLimit = Instance.new("UITextSizeConstraint", ValueLabel)
-    SizeLimit.MaxTextSize = 21
-    SizeLimit.MinTextSize = 11
+    SizeLimit.MaxTextSize = 24
+    SizeLimit.MinTextSize = 14
     return ValueLabel
 end
 
-Val2xLabel = createStatCard(0, "2X BOOST", Color3.fromRGB(185, 95, 255))
-Val5xLabel = createStatCard(0.3425, "5X BOOST", Color3.fromRGB(255, 145, 35))
-Val10xLabel = createStatCard(0.685, "10X BOOST", NeonGreen)
+Val2xLabel = createStatCard(0, "2X BOOST", Color3.fromRGB(195, 110, 255))
+Val5xLabel = createStatCard(0.341, "5X BOOST", Color3.fromRGB(255, 160, 45))
+Val10xLabel = createStatCard(0.682, "10X BOOST", NeonGreen)
 
-local Section2Title = Instance.new("TextLabel", MainFrame)
-Section2Title.Size = UDim2.new(1, -28, 0, 16)
-Section2Title.Position = UDim2.new(0, 14, 0, 162)
-Section2Title.BackgroundTransparency = 1
-Section2Title.Font = Enum.Font.Code
-Section2Title.Text = "> SYSTEEM MODULES"
-Section2Title.TextColor3 = TextMuted
-Section2Title.TextSize = 10
-Section2Title.TextXAlignment = Enum.TextXAlignment.Left
-
-local function createToggleRow(labelText, subText, yPos, defaultState, callback)
+-- Toggle Rows (Enkele regel, 14px GothamBold in puur wit voor maximale leesbaarheid)
+local function createToggleRow(labelText, yPos, defaultState, callback)
     local Row = Instance.new("Frame", MainFrame)
-    Row.Size = UDim2.new(1, -28, 0, 44)
-    Row.Position = UDim2.new(0, 14, 0, yPos)
+    Row.Size = UDim2.new(1, -24, 0, 34)
+    Row.Position = UDim2.new(0, 12, 0, yPos)
     Row.BackgroundColor3 = CardCyberBg
     Row.BorderSizePixel = 0
-    Instance.new("UICorner", Row).CornerRadius = UDim.new(0, 9)
+    Instance.new("UICorner", Row).CornerRadius = UDim.new(0, 8)
 
     local RowStroke = Instance.new("UIStroke", Row)
-    RowStroke.Color = defaultState and Color3.fromRGB(22, 75, 54) or Color3.fromRGB(28, 45, 38)
-    RowStroke.Thickness = 1
+    RowStroke.Color = defaultState and Color3.fromRGB(24, 85, 60) or Color3.fromRGB(30, 48, 40)
+    RowStroke.Thickness = 1.2
 
     local Indicator = Instance.new("Frame", Row)
-    Indicator.Size = UDim2.new(0, 3, 0, 24)
-    Indicator.Position = UDim2.new(0, 0, 0.5, -12)
-    Indicator.BackgroundColor3 = defaultState and NeonGreen or Color3.fromRGB(45, 70, 60)
+    Indicator.Size = UDim2.new(0, 4, 0, 20)
+    Indicator.Position = UDim2.new(0, 0, 0.5, -10)
+    Indicator.BackgroundColor3 = defaultState and NeonGreen or Color3.fromRGB(50, 75, 65)
     Indicator.BorderSizePixel = 0
 
     local Label = Instance.new("TextLabel", Row)
-    Label.Size = UDim2.new(1, -74, 0, 18)
-    Label.Position = UDim2.new(0, 12, 0, 6)
+    Label.Size = UDim2.new(1, -72, 1, 0)
+    Label.Position = UDim2.new(0, 12, 0, 0)
     Label.BackgroundTransparency = 1
-    Label.Font = Enum.Font.GothamSemibold
+    Label.Font = Enum.Font.GothamBold
     Label.Text = labelText
-    Label.TextColor3 = TextPrimary
-    Label.TextSize = 12
+    Label.TextColor3 = TextPure
+    Label.TextSize = 14
     Label.TextXAlignment = Enum.TextXAlignment.Left
 
-    local SubLabel = Instance.new("TextLabel", Row)
-    SubLabel.Size = UDim2.new(1, -74, 0, 14)
-    SubLabel.Position = UDim2.new(0, 12, 0, 24)
-    SubLabel.BackgroundTransparency = 1
-    SubLabel.Font = Enum.Font.Gotham
-    SubLabel.Text = subText
-    SubLabel.TextColor3 = TextMuted
-    SubLabel.TextSize = 10
-    SubLabel.TextXAlignment = Enum.TextXAlignment.Left
-
     local SwitchBg = Instance.new("TextButton", Row)
-    SwitchBg.Size = UDim2.new(0, 44, 0, 22)
-    SwitchBg.Position = UDim2.new(1, -54, 0.5, -11)
-    SwitchBg.BackgroundColor3 = defaultState and EmeraldGlow or Color3.fromRGB(24, 42, 35)
+    SwitchBg.Size = UDim2.new(0, 46, 0, 22)
+    SwitchBg.Position = UDim2.new(1, -56, 0.5, -11)
+    SwitchBg.BackgroundColor3 = defaultState and EmeraldGlow or Color3.fromRGB(26, 46, 38)
     SwitchBg.AutoButtonColor = false
     SwitchBg.Text = ""
     Instance.new("UICorner", SwitchBg).CornerRadius = UDim.new(1, 0)
@@ -686,22 +714,22 @@ local function createToggleRow(labelText, subText, yPos, defaultState, callback)
     local Knob = Instance.new("Frame", SwitchBg)
     Knob.Size = UDim2.new(0, 16, 0, 16)
     Knob.Position = defaultState and UDim2.new(1, -19, 0.5, -8) or UDim2.new(0, 3, 0.5, -8)
-    Knob.BackgroundColor3 = Color3.fromRGB(245, 255, 250)
+    Knob.BackgroundColor3 = TextPure
     Knob.BorderSizePixel = 0
     Instance.new("UICorner", Knob).CornerRadius = UDim.new(1, 0)
 
     local state = defaultState
     SwitchBg.MouseButton1Click:Connect(function()
         state = not state
-        TweenService:Create(Knob, TweenInfo.new(0.18), {Position = state and UDim2.new(1, -19, 0.5, -8) or UDim2.new(0, 3, 0.5, -8)}):Play()
-        TweenService:Create(SwitchBg, TweenInfo.new(0.18), {BackgroundColor3 = state and EmeraldGlow or Color3.fromRGB(24, 42, 35)}):Play()
-        TweenService:Create(Indicator, TweenInfo.new(0.18), {BackgroundColor3 = state and NeonGreen or Color3.fromRGB(45, 70, 60)}):Play()
+        TweenService:Create(Knob, TweenInfo.new(0.15), {Position = state and UDim2.new(1, -19, 0.5, -8) or UDim2.new(0, 3, 0.5, -8)}):Play()
+        TweenService:Create(SwitchBg, TweenInfo.new(0.15), {BackgroundColor3 = state and EmeraldGlow or Color3.fromRGB(26, 46, 38)}):Play()
+        TweenService:Create(Indicator, TweenInfo.new(0.15), {BackgroundColor3 = state and NeonGreen or Color3.fromRGB(50, 75, 65)}):Play()
         callback(state)
     end)
 end
 
-createToggleRow("Smart Bonus Claimer", "Echte klik + remote + PopBonus check", 182, autoBonus, function(val) autoBonus = val end)
-createToggleRow("Auto-TP Beach Island + Catch", "Landt midden op eiland & vangt op", 232, autoBeachGym, function(val)
+createToggleRow("Auto Bonus Claimer", 128, autoBonus, function(val) autoBonus = val end)
+createToggleRow("Auto Beach Gym TP", 167, autoBeachGym, function(val)
     autoBeachGym = val
     if val then
         local debris = Workspace:FindFirstChild("Debris")
@@ -713,63 +741,71 @@ createToggleRow("Auto-TP Beach Island + Catch", "Landt midden op eiland & vangt 
         end
     end
 end)
-createToggleRow("20 FPS Power Saver Lock", "Beperkt framerate tot 20 FPS (AFK)", 282, fpsCapEnabled, function(val)
+createToggleRow("20 FPS Power Lock", 206, fpsCapEnabled, function(val)
     fpsCapEnabled = val
     if setfpscap then pcall(setfpscap, val and 20 or 60) end
 end)
-createToggleRow("Bulletproof Anti-AFK + Reconnect", "4-laags beveiliging & auto-herstel", 332, antiAfkEnabled, function(val)
+createToggleRow("Anti-AFK + Reconnect", 245, antiAfkEnabled, function(val)
     antiAfkEnabled = val
     autoReconnectEnabled = val
     if val then triggerAfkPulse() end
 end)
 
 local VoidBtn = Instance.new("TextButton", MainFrame)
-VoidBtn.Size = UDim2.new(1, -28, 0, 38)
-VoidBtn.Position = UDim2.new(0, 14, 0, 386)
-VoidBtn.BackgroundColor3 = Color3.fromRGB(14, 135, 82)
-VoidBtn.Font = Enum.Font.GothamBold
-VoidBtn.Text = "Sloop 3D Wereld + Alle Effecten"
-VoidBtn.TextColor3 = Color3.fromRGB(245, 255, 250)
-VoidBtn.TextSize = 12
-Instance.new("UICorner", VoidBtn).CornerRadius = UDim.new(0, 9)
+VoidBtn.Size = UDim2.new(1, -24, 0, 32)
+VoidBtn.Position = UDim2.new(0, 12, 0, 285)
+VoidBtn.BackgroundColor3 = Color3.fromRGB(14, 145, 88)
+VoidBtn.Font = Enum.Font.GothamBlack
+VoidBtn.Text = "SLOOP WERELD & WOLKEN"
+VoidBtn.TextColor3 = TextPure
+VoidBtn.TextSize = 13
+Instance.new("UICorner", VoidBtn).CornerRadius = UDim.new(0, 8)
 
 local VoidStroke = Instance.new("UIStroke", VoidBtn)
 VoidStroke.Color = NeonGreen
-VoidStroke.Thickness = 1.2
-VoidStroke.Transparency = 0.25
+VoidStroke.Thickness = 1.4
+VoidStroke.Transparency = 0.2
 
 VoidBtn.MouseButton1Click:Connect(function()
     enableVoidMode()
-    VoidBtn.Text = "ULTRA-VOID ACTIEF (0% Render)"
-    VoidBtn.BackgroundColor3 = Color3.fromRGB(18, 170, 102)
+    VoidBtn.Text = "ULTRA-VOID ACTIEF"
+    VoidBtn.BackgroundColor3 = Color3.fromRGB(18, 175, 105)
 end)
 
+-- Grote leesbare Footer (blijft ook zichtbaar als de HUD is ingeklapt)
 local Footer = Instance.new("Frame", MainFrame)
-Footer.Size = UDim2.new(1, 0, 0, 18)
-Footer.Position = UDim2.new(0, 0, 1, -18)
-Footer.BackgroundColor3 = Color3.fromRGB(9, 18, 15)
+Footer.Size = UDim2.new(1, 0, 0, 24)
+Footer.Position = UDim2.new(0, 0, 1, -24)
+Footer.BackgroundColor3 = Color3.fromRGB(10, 20, 16)
 Footer.BorderSizePixel = 0
 
+local FooterTopLine = Instance.new("Frame", Footer)
+FooterTopLine.Size = UDim2.new(1, 0, 0, 1)
+FooterTopLine.BackgroundColor3 = NeonGreen
+FooterTopLine.BackgroundTransparency = 0.5
+FooterTopLine.BorderSizePixel = 0
+
 FooterStatsLabel = Instance.new("TextLabel", Footer)
-FooterStatsLabel.Size = UDim2.new(1, -20, 1, 0)
-FooterStatsLabel.Position = UDim2.new(0, 10, 0, 0)
+FooterStatsLabel.Size = UDim2.new(1, -16, 1, 0)
+FooterStatsLabel.Position = UDim2.new(0, 8, 0, 0)
 FooterStatsLabel.BackgroundTransparency = 1
-FooterStatsLabel.Font = Enum.Font.Code
-FooterStatsLabel.Text = "TOT: 0  |  GYM: 0  |  0ms  |  AFK: 0  |  20 FPS"
-FooterStatsLabel.TextColor3 = EmeraldGlow
-FooterStatsLabel.TextSize = 10
+FooterStatsLabel.Font = Enum.Font.GothamBold
+FooterStatsLabel.Text = "TOT: 0  |  GYM: 0  |  AFK: 0  |  20 FPS"
+FooterStatsLabel.TextColor3 = NeonGreen
+FooterStatsLabel.TextSize = 13
 
 MinBtn.MouseButton1Click:Connect(function()
     isMinimized = not isMinimized
     MinBtn.Text = isMinimized and "+" or "-"
-    TweenService:Create(MainFrame, TweenInfo.new(0.2), {Size = isMinimized and UDim2.new(0, guiWidth, 0, 54) or UDim2.new(0, guiWidth, 0, fullHeight)}):Play()
-    TweenService:Create(GlowAura, TweenInfo.new(0.2), {Size = isMinimized and UDim2.new(0, guiWidth + 6, 0, 60) or UDim2.new(0, guiWidth + 6, 0, fullHeight + 6)}):Play()
+    local targetH = isMinimized and minHeight or fullHeight
+    TweenService:Create(MainFrame, TweenInfo.new(0.18), {Size = UDim2.new(0, guiWidth, 0, targetH)}):Play()
+    TweenService:Create(GlowAura, TweenInfo.new(0.18), {Size = UDim2.new(0, guiWidth + 6, 0, targetH + 6)}):Play()
 end)
 
 CloseBtn.MouseButton1Click:Connect(function()
     autoBonus, autoBeachGym, antiAfkEnabled, autoReconnectEnabled = false, false, false, false
     if setfpscap then pcall(setfpscap, 60) end
-    for _, c in pairs({afkConnection, errorConnection, bonusConn, popCleanerConn, playerCleanerConn, debrisCleanerConn, respawnConn, worldEffectConn, charEffectConn}) do
+    for _, c in pairs({afkConnection, errorConnection, bonusConn, popCleanerConn, playerCleanerConn, debrisCleanerConn, respawnConn, worldEffectConn, charEffectConn, lightingConn, terrainConn}) do
         if c then pcall(function() c:Disconnect() end) end
     end
     for _, c in ipairs(gymWatchConns) do pcall(function() c:Disconnect() end) end
