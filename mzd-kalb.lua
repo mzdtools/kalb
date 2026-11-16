@@ -1,5 +1,5 @@
 -- =====================================================================
--- MzD KALB script - Ultra-Void v3.2 (Total World Wipe + Visible Training)
+-- MzD KALB script - Ultra-Void v3.3 (Total World Wipe + Exact Weight Equip)
 -- =====================================================================
 
 if setfpscap then pcall(setfpscap, 20) end
@@ -21,22 +21,56 @@ local CoreGui = game:GetService("CoreGui")
 local player = Players.LocalPlayer
 local pGui = player:WaitForChild("PlayerGui")
 
--- Zorg dat 3D-rendering altijd aan staat zodat je platform, gym & character zichtbaar zijn
+-- Houd 3D-rendering altijd aan zodat jij, je platform en Beach Gym zichtbaar zijn
 pcall(function()
     RunService:Set3dRenderingEnabled(true)
 end)
 
 local bonusRemote = nil
+local weightEquipRemote = nil
 task.spawn(function()
     local shared = ReplicatedStorage:WaitForChild("Shared", 15)
     local packages = shared and shared:WaitForChild("Packages", 15)
     local network = packages and packages:WaitForChild("Network", 15)
-    bonusRemote = network and network:WaitForChild("rev_TaviMishkal", 15)
+    if network then
+        bonusRemote = network:FindFirstChild("rev_TaviMishkal") or network:WaitForChild("rev_TaviMishkal", 10)
+        weightEquipRemote = network:FindFirstChild("rev_WeightEquip") or network:WaitForChild("rev_WeightEquip", 10)
+    end
 end)
 
 local uiName = "MzD_KALB_HUD"
 local existing = (gethui and gethui():FindFirstChild(uiName)) or CoreGui:FindFirstChild(uiName)
 if existing then existing:Destroy() end
+
+-- =====================================================================
+-- Officiële Gewichten (gesorteerd van sterkst naar zwakst)
+-- =====================================================================
+local WEIGHT_PRIORITY = {
+    "Black Hole Barbell",
+    "Big Jupiter",
+    "Planet Barbell",
+    "Cosmic Barbell",
+    "Neon Pulse",
+    "Heaven Plate",
+    "Giant Gold Star Barbell",
+    "Mega Golden Barbell",
+    "Elephant Plate",
+    "Lucky Block Barbell",
+    "Emerald Barbell",
+    "Ice Barbell",
+    "Golden Barbell",
+    "Donut Barbell",
+    "Bone Barbell",
+    "Stone Block",
+    "Iron Plate",
+    "Copper Plate",
+    "Wooden Stick"
+}
+
+local WEIGHT_LOOKUP = {}
+for rank, wName in ipairs(WEIGHT_PRIORITY) do
+    WEIGHT_LOOKUP[string.lower(wName)] = rank
+end
 
 -- =====================================================================
 -- Status & Tellers
@@ -52,6 +86,7 @@ local gymTpCount, lastReactionMs, afkPulses = 0, 0, 0
 local lastSeenMultiplier = "x2"
 local lastBonusSpawnTick = 0
 local activeBeachGym = nil
+local activeWeightName = "ZOEKEN..."
 
 local conns = {}
 local gymWatchConns = {}
@@ -67,7 +102,7 @@ local function updateDashboard()
     if ValGymLabel then ValGymLabel.Text = tostring(gymTpCount) end
     if ValMsLabel then ValMsLabel.Text = tostring(lastReactionMs) .. "ms" end
     if FooterStatsLabel then
-        FooterStatsLabel.Text = string.format("AFK PULSEN: %d  |  RECONNECT: AAN  |  20 FPS", afkPulses)
+        FooterStatsLabel.Text = string.format("WEIGHT: %s  |  AFK: %d", string.upper(activeWeightName), afkPulses)
     end
 end
 
@@ -104,7 +139,6 @@ local function spawnPlatformUnderPlayer(char)
     safePad.BottomSurface = Enum.SurfaceType.Smooth
     safePad.Parent = Workspace
 
-    -- Neon randje rondom je trainingsplatform voor goed zicht
     local border = Instance.new("SelectionBox")
     border.Adornee = safePad
     border.Color3 = Color3.fromRGB(0, 255, 145)
@@ -137,7 +171,6 @@ local function disableVisualNoise(inst)
                 end)
             end
         elseif inst:IsA("BillboardGui") or inst:IsA("SurfaceGui") then
-            -- Laat alleen de teller boven het Beach Gym eiland zichtbaar
             local gm = Workspace:FindFirstChild("Debris") and Workspace.Debris:FindFirstChild("GymMachine")
             if not (gm and inst:IsDescendantOf(gm)) then
                 inst.Enabled = false
@@ -215,18 +248,13 @@ local function setupCleanVoidEnvironment()
 end
 
 local function obliterateWorldNow()
-    -- 1. Zet eerst platform onder je voeten voordat de map verdwijnt
     if not activeBeachGym then
         spawnPlatformUnderPlayer(player.Character)
     end
 
-    -- 2. Maak lucht leeg & zwart met heldere verlichting op je karakter/platform
     setupCleanVoidEnvironment()
-
-    -- 3. Verberg alle game-UI en popups
     stripAllGameGuis()
 
-    -- 4. Sloop ALLES in Workspace behalve jouw karakter, platform en Beach Gym
     local char = player.Character
     local emptyFolders = {
         ["Areas"] = true,
@@ -245,14 +273,12 @@ local function obliterateWorldNow()
 
     for _, obj in ipairs(Workspace:GetChildren()) do
         if emptyFolders[obj.Name] then
-            -- Houd lege map-container over tegen eventuele client-script errors, maar sloop 100% van inhoud
             pcall(function() obj:ClearAllChildren() end)
         elseif not protectedRoots[obj.Name] and obj ~= char then
             pcall(function() obj:Destroy() end)
         end
     end
 
-    -- Sloop alle andere spelers in Workspace.Players
     local playersFolder = Workspace:FindFirstChild("Players")
     if playersFolder then
         for _, pModel in ipairs(playersFolder:GetChildren()) do
@@ -262,7 +288,6 @@ local function obliterateWorldNow()
         end
     end
 
-    -- Sloop alles in Debris behalve GymMachine -> beach gym
     local debrisFolder = Workspace:FindFirstChild("Debris")
     if debrisFolder then
         for _, dChild in ipairs(debrisFolder:GetChildren()) do
@@ -278,7 +303,6 @@ local function obliterateWorldNow()
         end
     end
 
-    -- Schakel alleen particles/trails/geluid uit op je eigen karakter (karakter zelf blijft 100% zichtbaar)
     if char then
         for _, desc in ipairs(char:GetDescendants()) do
             disableVisualNoise(desc)
@@ -286,7 +310,6 @@ local function obliterateWorldNow()
     end
 end
 
--- Watchers om alles wat nieuw spawnt direct op te ruimen
 table.insert(conns, Workspace.ChildAdded:Connect(function(obj)
     task.defer(function()
         if not obj or not obj.Parent then return end
@@ -347,31 +370,78 @@ table.insert(conns, Lighting.ChildAdded:Connect(function(eff)
 end))
 
 -- =====================================================================
--- DIRECT AUTO-EQUIP & AUTO-LIFT WEIGHT (Begint direct met trainen)
+-- EXACTE WEIGHT EQUIP (Uit Backpack of WeightUI) & AUTO-LIFT
 -- =====================================================================
-local function findWeightTool()
+local function getBestWeightTool()
+    local bestTool = nil
+    local bestRank = 999
+    local isEquipped = false
+
     local char = player.Character
     if char then
-        local equipped = char:FindFirstChildOfClass("Tool")
-        if equipped then return equipped, true end
-    end
-
-    local backpack = player:FindFirstChildOfClass("Backpack")
-    if not backpack then return nil, false end
-
-    local fallbackTool = nil
-    for _, item in ipairs(backpack:GetChildren()) do
-        if item:IsA("Tool") then
-            if not fallbackTool then fallbackTool = item end
-            local lower = string.lower(item.Name)
-            if string.find(lower, "weight") or string.find(lower, "dumbbell")
-                or string.find(lower, "lift") or string.find(lower, "barbell")
-                or string.find(lower, "train") or string.find(lower, "gym") then
-                return item, false
+        for _, item in ipairs(char:GetChildren()) do
+            if item:IsA("Tool") then
+                local rank = WEIGHT_LOOKUP[string.lower(item.Name)]
+                if rank and rank < bestRank then
+                    bestRank = rank
+                    bestTool = item
+                    isEquipped = true
+                end
             end
         end
     end
-    return fallbackTool, false
+
+    local backpack = player:FindFirstChildOfClass("Backpack")
+    if backpack then
+        for _, item in ipairs(backpack:GetChildren()) do
+            if item:IsA("Tool") then
+                local rank = WEIGHT_LOOKUP[string.lower(item.Name)]
+                if rank and rank < bestRank then
+                    bestRank = rank
+                    bestTool = item
+                    isEquipped = false
+                end
+            end
+        end
+    end
+
+    return bestTool, isEquipped
+end
+
+local lastInventoryPull = 0
+local function pullWeightFromWeightUI()
+    if tick() - lastInventoryPull < 2.5 then return end
+    lastInventoryPull = tick()
+
+    local frames = pGui:FindFirstChild("Frames")
+    local weightUI = frames and frames:FindFirstChild("WeightUI")
+    local scroller = weightUI and weightUI:FindFirstChild("ScrollingFrame")
+
+    for _, wName in ipairs(WEIGHT_PRIORITY) do
+        local entry = scroller and scroller:FindFirstChild(wName)
+        if entry then
+            if weightEquipRemote then
+                pcall(function() weightEquipRemote:FireServer(wName) end)
+            end
+            local btns = entry:FindFirstChild("Buttons")
+            local eqBtn = btns and btns:FindFirstChild("Equipped")
+            if eqBtn and eqBtn:IsA("GuiButton") then
+                pcall(function()
+                    if getconnections then
+                        for _, c in pairs(getconnections(eqBtn.MouseButton1Click)) do c:Fire() end
+                        for _, c in pairs(getconnections(eqBtn.Activated)) do c:Fire() end
+                    end
+                    if firesignal then
+                        pcall(firesignal, eqBtn.MouseButton1Click)
+                        pcall(firesignal, eqBtn.Activated)
+                    end
+                end)
+            end
+            task.wait(0.15)
+            local found = getBestWeightTool()
+            if found then return end
+        end
+    end
 end
 
 task.spawn(function()
@@ -385,8 +455,14 @@ task.spawn(function()
             local char = player.Character
             local hum = char and char:FindFirstChildOfClass("Humanoid")
             if hum and hum.Health > 0 then
-                local tool, isEquipped = findWeightTool()
-                if tool then
+                local tool, isEquipped = getBestWeightTool()
+                if not tool then
+                    task.spawn(pullWeightFromWeightUI)
+                else
+                    if activeWeightName ~= tool.Name then
+                        activeWeightName = tool.Name
+                        updateDashboard()
+                    end
                     if not isEquipped then
                         pcall(function() hum:EquipTool(tool) end)
                     else
@@ -612,7 +688,7 @@ table.insert(conns, player.CharacterAdded:Connect(function(newChar)
 end))
 
 -- =====================================================================
--- COMPACTE STATS HUD (Zichtbaar rechtsboven/midden, hoog contrast)
+-- COMPACTE STATS HUD
 -- =====================================================================
 local guiWidth, guiHeight = 356, 254
 local NeonGreen    = Color3.fromRGB(0, 255, 145)
@@ -787,7 +863,6 @@ ValGymLabel = createStatCard(TelemetryRow, 0.341, "BEACH GYM", TextMuted, 20)
 ValMsLabel = createStatCard(TelemetryRow, 0.682, "REACTIE", TextMuted, 20)
 ValMsLabel.Text = "0ms"
 
--- 4 Klikbare Status-Pills: LIFT | BONUS | GYM TP | AFK
 local PillsRow = Instance.new("Frame", MainFrame)
 PillsRow.Size = UDim2.new(1, -20, 0, 32)
 PillsRow.Position = UDim2.new(0, 10, 0, 190)
@@ -855,7 +930,7 @@ FooterStatsLabel.Size = UDim2.new(1, -12, 1, 0)
 FooterStatsLabel.Position = UDim2.new(0, 6, 0, 0)
 FooterStatsLabel.BackgroundTransparency = 1
 FooterStatsLabel.Font = Enum.Font.GothamBold
-FooterStatsLabel.Text = "AFK PULSEN: 0  |  RECONNECT: AAN  |  20 FPS"
+FooterStatsLabel.Text = "WEIGHT: ZOEKEN...  |  AFK: 0"
 FooterStatsLabel.TextColor3 = NeonGreen
 FooterStatsLabel.TextSize = 11
 
@@ -969,7 +1044,7 @@ task.spawn(function()
 end)
 
 -- =====================================================================
--- DIRECT UITVOEREN BIJ START (Sloop wereld + plaats platform + start lift)
+-- DIRECT UITVOEREN BIJ START
 -- =====================================================================
 obliterateWorldNow()
 triggerAfkPulse()
