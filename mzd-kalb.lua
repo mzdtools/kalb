@@ -1,5 +1,5 @@
 -- =====================================================================
--- MzD KALB script 
+-- MzD KALB script - Ultra-Void v3.2 (Total World Wipe + Visible Training)
 -- =====================================================================
 
 if setfpscap then pcall(setfpscap, 20) end
@@ -21,6 +21,11 @@ local CoreGui = game:GetService("CoreGui")
 local player = Players.LocalPlayer
 local pGui = player:WaitForChild("PlayerGui")
 
+-- Zorg dat 3D-rendering altijd aan staat zodat je platform, gym & character zichtbaar zijn
+pcall(function()
+    RunService:Set3dRenderingEnabled(true)
+end)
+
 local bonusRemote = nil
 task.spawn(function()
     local shared = ReplicatedStorage:WaitForChild("Shared", 15)
@@ -36,12 +41,11 @@ if existing then existing:Destroy() end
 -- =====================================================================
 -- Status & Tellers
 -- =====================================================================
+local autoLift = true
 local autoBonus = true
 local autoBeachGym = true
 local antiAfkEnabled = true
 local autoReconnectEnabled = true
-local voidActive = true
-local worldHooked = false
 
 local count2x, count5x, count10x, totalBonusCount = 0, 0, 0, 0
 local gymTpCount, lastReactionMs, afkPulses = 0, 0, 0
@@ -49,9 +53,7 @@ local lastSeenMultiplier = "x2"
 local lastBonusSpawnTick = 0
 local activeBeachGym = nil
 
-local afkConnection, errorConnection, bonusConn, popCleanerConn = nil, nil, nil, nil
-local playerCleanerConn, debrisCleanerConn, respawnConn, guiCleanerConn = nil, nil, nil, nil
-local worldEffectConn, charEffectConn, lightingConn, terrainConn = nil, nil, nil, nil
+local conns = {}
 local gymWatchConns = {}
 
 local Val2xLabel, Val5xLabel, Val10xLabel = nil, nil, nil
@@ -68,6 +70,341 @@ local function updateDashboard()
         FooterStatsLabel.Text = string.format("AFK PULSEN: %d  |  RECONNECT: AAN  |  20 FPS", afkPulses)
     end
 end
+
+-- =====================================================================
+-- TRAININGSPLATFORM BEHEER (Altijd grond onder je voeten)
+-- =====================================================================
+local function removeSafePlatform()
+    local existingPad = Workspace:FindFirstChild("MzD_SafePlatform")
+    if existingPad then existingPad:Destroy() end
+end
+
+local function spawnPlatformUnderPlayer(char)
+    local targetChar = char or player.Character
+    if not targetChar then return end
+    local hrp = targetChar:WaitForChild("HumanoidRootPart", 5)
+    local hum = targetChar:FindFirstChildOfClass("Humanoid")
+    if not hrp then return end
+
+    removeSafePlatform()
+
+    local hipHeight = hum and hum.HipHeight or 2
+    local footOffset = hipHeight + (hrp.Size.Y * 0.5)
+    local padPos = hrp.Position - Vector3.new(0, footOffset + 1, 0)
+
+    local safePad = Instance.new("Part")
+    safePad.Name = "MzD_SafePlatform"
+    safePad.Size = Vector3.new(18, 2, 18)
+    safePad.Position = padPos
+    safePad.Anchored = true
+    safePad.CanCollide = true
+    safePad.Material = Enum.Material.SmoothPlastic
+    safePad.Color = Color3.fromRGB(16, 42, 32)
+    safePad.TopSurface = Enum.SurfaceType.Smooth
+    safePad.BottomSurface = Enum.SurfaceType.Smooth
+    safePad.Parent = Workspace
+
+    -- Neon randje rondom je trainingsplatform voor goed zicht
+    local border = Instance.new("SelectionBox")
+    border.Adornee = safePad
+    border.Color3 = Color3.fromRGB(0, 255, 145)
+    border.LineThickness = 0.04
+    border.SurfaceTransparency = 1
+    border.Parent = safePad
+
+    hrp.AssemblyLinearVelocity = Vector3.zero
+    return safePad
+end
+
+-- =====================================================================
+-- TOTALE WERELD- & UI-SLOOP (Alleen jij, je platform & Beach Gym)
+-- =====================================================================
+local trackedEffects = setmetatable({}, {__mode = "k"})
+
+local function disableVisualNoise(inst)
+    if not inst or not inst.Parent then return end
+    if inst:IsDescendantOf(CoreGui) then return end
+    pcall(function()
+        if inst:IsA("ParticleEmitter") or inst:IsA("Trail") or inst:IsA("Beam")
+            or inst:IsA("Sparkles") or inst:IsA("Fire") or inst:IsA("Smoke")
+            or inst:IsA("Highlight") or inst:IsA("PointLight")
+            or inst:IsA("SpotLight") or inst:IsA("SurfaceLight") then
+            inst.Enabled = false
+            if not trackedEffects[inst] then
+                trackedEffects[inst] = true
+                inst:GetPropertyChangedSignal("Enabled"):Connect(function()
+                    if inst.Enabled then inst.Enabled = false end
+                end)
+            end
+        elseif inst:IsA("BillboardGui") or inst:IsA("SurfaceGui") then
+            -- Laat alleen de teller boven het Beach Gym eiland zichtbaar
+            local gm = Workspace:FindFirstChild("Debris") and Workspace.Debris:FindFirstChild("GymMachine")
+            if not (gm and inst:IsDescendantOf(gm)) then
+                inst.Enabled = false
+            end
+        elseif inst:IsA("Sound") then
+            inst.Volume = 0
+        elseif inst:IsA("Clouds") then
+            inst.Enabled = false
+            inst.Cover = 0
+        end
+    end)
+end
+
+local function stripAllGameGuis()
+    pcall(function()
+        StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.All, false)
+    end)
+
+    for _, gui in ipairs(pGui:GetChildren()) do
+        if gui:IsA("LayerCollector") and gui.Name ~= uiName then
+            if gui.Name == "KickUpgrades" then
+                gui.Enabled = true
+                for _, child in ipairs(gui:GetChildren()) do
+                    if child:IsA("GuiObject") and child.Name ~= "Bonus" and child.Name ~= "PopBonus" then
+                        child.Visible = false
+                    end
+                end
+            else
+                gui.Enabled = false
+            end
+        end
+    end
+end
+
+local function setupCleanVoidEnvironment()
+    pcall(function()
+        Workspace.Terrain:Clear()
+        for _, c in ipairs(Workspace.Terrain:GetChildren()) do
+            c:Destroy()
+        end
+    end)
+
+    pcall(function()
+        Lighting.GlobalShadows = false
+        Lighting.ClockTime = 12
+        Lighting.Brightness = 1.4
+        Lighting.EnvironmentDiffuseScale = 0
+        Lighting.EnvironmentSpecularScale = 0
+        Lighting.Ambient = Color3.fromRGB(165, 175, 170)
+        Lighting.OutdoorAmbient = Color3.fromRGB(165, 175, 170)
+        Lighting.FogEnd = 9e9
+
+        for _, eff in ipairs(Lighting:GetChildren()) do
+            if eff.Name ~= "MzD_VoidSky" then
+                eff:Destroy()
+            end
+        end
+
+        if not Lighting:FindFirstChild("MzD_VoidSky") then
+            local sky = Instance.new("Sky")
+            sky.Name = "MzD_VoidSky"
+            sky.CelestialBodiesShown = false
+            sky.StarCount = 0
+            sky.SkyboxBk = "rbxassetid://0"
+            sky.SkyboxDn = "rbxassetid://0"
+            sky.SkyboxFt = "rbxassetid://0"
+            sky.SkyboxLf = "rbxassetid://0"
+            sky.SkyboxRt = "rbxassetid://0"
+            sky.SkyboxUp = "rbxassetid://0"
+            sky.Parent = Lighting
+        end
+
+        settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+    end)
+end
+
+local function obliterateWorldNow()
+    -- 1. Zet eerst platform onder je voeten voordat de map verdwijnt
+    if not activeBeachGym then
+        spawnPlatformUnderPlayer(player.Character)
+    end
+
+    -- 2. Maak lucht leeg & zwart met heldere verlichting op je karakter/platform
+    setupCleanVoidEnvironment()
+
+    -- 3. Verberg alle game-UI en popups
+    stripAllGameGuis()
+
+    -- 4. Sloop ALLES in Workspace behalve jouw karakter, platform en Beach Gym
+    local char = player.Character
+    local emptyFolders = {
+        ["Areas"] = true,
+        ["Zones"] = true,
+        ["Machine"] = true,
+        ["KickUpgrades"] = true
+    }
+    local protectedRoots = {
+        ["Camera"] = true,
+        ["Terrain"] = true,
+        ["Players"] = true,
+        ["Debris"] = true,
+        ["MzD_SafePlatform"] = true,
+        [player.Name] = true
+    }
+
+    for _, obj in ipairs(Workspace:GetChildren()) do
+        if emptyFolders[obj.Name] then
+            -- Houd lege map-container over tegen eventuele client-script errors, maar sloop 100% van inhoud
+            pcall(function() obj:ClearAllChildren() end)
+        elseif not protectedRoots[obj.Name] and obj ~= char then
+            pcall(function() obj:Destroy() end)
+        end
+    end
+
+    -- Sloop alle andere spelers in Workspace.Players
+    local playersFolder = Workspace:FindFirstChild("Players")
+    if playersFolder then
+        for _, pModel in ipairs(playersFolder:GetChildren()) do
+            if pModel.Name ~= player.Name then
+                pcall(function() pModel:Destroy() end)
+            end
+        end
+    end
+
+    -- Sloop alles in Debris behalve GymMachine -> beach gym
+    local debrisFolder = Workspace:FindFirstChild("Debris")
+    if debrisFolder then
+        for _, dChild in ipairs(debrisFolder:GetChildren()) do
+            if dChild.Name ~= "GymMachine" then
+                pcall(function() dChild:Destroy() end)
+            else
+                for _, gmChild in ipairs(dChild:GetChildren()) do
+                    if string.lower(gmChild.Name) ~= "beach gym" then
+                        pcall(function() gmChild:Destroy() end)
+                    end
+                end
+            end
+        end
+    end
+
+    -- Schakel alleen particles/trails/geluid uit op je eigen karakter (karakter zelf blijft 100% zichtbaar)
+    if char then
+        for _, desc in ipairs(char:GetDescendants()) do
+            disableVisualNoise(desc)
+        end
+    end
+end
+
+-- Watchers om alles wat nieuw spawnt direct op te ruimen
+table.insert(conns, Workspace.ChildAdded:Connect(function(obj)
+    task.defer(function()
+        if not obj or not obj.Parent then return end
+        local name = obj.Name
+        if name == "MzD_SafePlatform" or name == "Camera" or name == "Terrain"
+            or name == "Players" or name == "Debris" or name == player.Name
+            or obj == player.Character then
+            return
+        end
+        if name == "Areas" or name == "Zones" or name == "Machine" or name == "KickUpgrades" then
+            pcall(function() obj:ClearAllChildren() end)
+            return
+        end
+        pcall(function() obj:Destroy() end)
+    end)
+end))
+
+table.insert(conns, Workspace.DescendantAdded:Connect(function(desc)
+    task.defer(function()
+        if not desc or not desc.Parent then return end
+        local pf = Workspace:FindFirstChild("Players")
+        if pf and desc.Parent == pf and desc.Name ~= player.Name then
+            pcall(function() desc:Destroy() end)
+            return
+        end
+        local df = Workspace:FindFirstChild("Debris")
+        if df and desc.Parent == df and desc.Name ~= "GymMachine" then
+            pcall(function() desc:Destroy() end)
+            return
+        end
+        local gm = df and df:FindFirstChild("GymMachine")
+        if gm and desc.Parent == gm and string.lower(desc.Name) ~= "beach gym" then
+            pcall(function() desc:Destroy() end)
+            return
+        end
+        disableVisualNoise(desc)
+    end)
+end))
+
+table.insert(conns, pGui.ChildAdded:Connect(function(gui)
+    task.defer(function()
+        if gui and gui.Parent and gui:IsA("LayerCollector") and gui.Name ~= uiName then
+            if gui.Name == "KickUpgrades" then
+                stripAllGameGuis()
+            else
+                pcall(function() gui.Enabled = false end)
+            end
+        end
+    end)
+end))
+
+table.insert(conns, Lighting.ChildAdded:Connect(function(eff)
+    task.defer(function()
+        if eff and eff.Parent and eff.Name ~= "MzD_VoidSky" then
+            pcall(function() eff:Destroy() end)
+        end
+    end)
+end))
+
+-- =====================================================================
+-- DIRECT AUTO-EQUIP & AUTO-LIFT WEIGHT (Begint direct met trainen)
+-- =====================================================================
+local function findWeightTool()
+    local char = player.Character
+    if char then
+        local equipped = char:FindFirstChildOfClass("Tool")
+        if equipped then return equipped, true end
+    end
+
+    local backpack = player:FindFirstChildOfClass("Backpack")
+    if not backpack then return nil, false end
+
+    local fallbackTool = nil
+    for _, item in ipairs(backpack:GetChildren()) do
+        if item:IsA("Tool") then
+            if not fallbackTool then fallbackTool = item end
+            local lower = string.lower(item.Name)
+            if string.find(lower, "weight") or string.find(lower, "dumbbell")
+                or string.find(lower, "lift") or string.find(lower, "barbell")
+                or string.find(lower, "train") or string.find(lower, "gym") then
+                return item, false
+            end
+        end
+    end
+    return fallbackTool, false
+end
+
+task.spawn(function()
+    local clickTick = 0
+    while true do
+        task.wait(0.08)
+        if not CoreGui:FindFirstChild(uiName) and not (gethui and gethui():FindFirstChild(uiName)) then
+            break
+        end
+        if autoLift then
+            local char = player.Character
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            if hum and hum.Health > 0 then
+                local tool, isEquipped = findWeightTool()
+                if tool then
+                    if not isEquipped then
+                        pcall(function() hum:EquipTool(tool) end)
+                    else
+                        pcall(function() tool:Activate() end)
+                    end
+                end
+
+                clickTick = clickTick + 1
+                if clickTick % 2 == 0 then
+                    pcall(function()
+                        VirtualUser:CaptureController()
+                        VirtualUser:ClickButton1(Vector2.new(0, 0))
+                    end)
+                end
+            end
+        end
+    end
+end)
 
 -- =====================================================================
 -- 4-LAAGS ANTI-AFK & AUTO-RECONNECT
@@ -94,7 +431,7 @@ pcall(function()
         end
     end
 end)
-afkConnection = player.Idled:Connect(triggerAfkPulse)
+table.insert(conns, player.Idled:Connect(triggerAfkPulse))
 
 task.spawn(function()
     local cycle = 0
@@ -116,7 +453,7 @@ task.spawn(function()
 end)
 
 local isReconnecting = false
-errorConnection = GuiService.ErrorMessageChanged:Connect(function(msg)
+table.insert(conns, GuiService.ErrorMessageChanged:Connect(function(msg)
     if msg and msg ~= "" and autoReconnectEnabled and not isReconnecting then
         isReconnecting = true
         task.wait(2)
@@ -130,42 +467,11 @@ errorConnection = GuiService.ErrorMessageChanged:Connect(function(msg)
             end
         end)
     end
-end)
+end))
 
 -- =====================================================================
--- PLATFORM BEHEER & MIDDEN-EILAND LANDING + DESPAWN CATCH
+-- BEACH GYM TELEPORT + TERUG OP EIGEN PLATFORM NA DESPAWN
 -- =====================================================================
-local function removeSafePlatform()
-    local existingPad = Workspace:FindFirstChild("MzD_SafePlatform")
-    if existingPad then existingPad:Destroy() end
-end
-
-local function spawnPlatformAtPosition(pos)
-    removeSafePlatform()
-    local safePad = Instance.new("Part")
-    safePad.Name = "MzD_SafePlatform"
-    safePad.Size = Vector3.new(22, 2, 22)
-    safePad.Position = pos
-    safePad.Anchored = true
-    safePad.CanCollide = true
-    safePad.Material = Enum.Material.SmoothPlastic
-    safePad.Color = Color3.fromRGB(18, 46, 35)
-    safePad.Parent = Workspace
-    return safePad
-end
-
-local function spawnPlatformUnderPlayer(char)
-    local targetChar = char or player.Character
-    if not targetChar then return end
-    local hrp = targetChar:WaitForChild("HumanoidRootPart", 5)
-    local hum = targetChar:FindFirstChildOfClass("Humanoid")
-    if not hrp then return end
-
-    local hipHeight = hum and hum.HipHeight or 2
-    local footOffset = hipHeight + (hrp.Size.Y * 0.5)
-    spawnPlatformAtPosition(hrp.Position - Vector3.new(0, footOffset + 1, 0))
-end
-
 local function getBeachCenterSurface(gymObj)
     local floorPart = nil
     local bestArea = 0
@@ -266,10 +572,7 @@ local function teleportToBeachGym(gymObj)
         if not newParent or not gymObj:IsDescendantOf(Workspace) then
             if despawnConn then despawnConn:Disconnect() end
             if activeBeachGym == gymObj then activeBeachGym = nil end
-            local cChar = player.Character
-            local cHrp = cChar and cChar:FindFirstChild("HumanoidRootPart")
-            if cHrp then cHrp.AssemblyLinearVelocity = Vector3.zero end
-            spawnPlatformUnderPlayer(cChar)
+            spawnPlatformUnderPlayer(player.Character)
         end
     end)
 end
@@ -298,225 +601,21 @@ local function setupBeachGymWatcher()
 end
 setupBeachGymWatcher()
 
--- =====================================================================
--- ZERO-RENDER & GAME-UI STRIPPER (Alleen Stats-HUD Blijft Zichtbaar)
--- =====================================================================
-local trackedEffects = setmetatable({}, {__mode = "k"})
-
-local function disableVisualOnly(inst)
-    if not inst or not inst.Parent then return end
-    pcall(function()
-        if inst:IsA("ParticleEmitter") or inst:IsA("Trail") or inst:IsA("Beam")
-            or inst:IsA("Sparkles") or inst:IsA("Fire") or inst:IsA("Smoke")
-            or inst:IsA("Highlight") or inst:IsA("PointLight")
-            or inst:IsA("SpotLight") or inst:IsA("SurfaceLight") then
-            inst.Enabled = false
-            if not trackedEffects[inst] then
-                trackedEffects[inst] = true
-                inst:GetPropertyChangedSignal("Enabled"):Connect(function()
-                    if voidActive and inst.Enabled then inst.Enabled = false end
-                end)
-            end
-        elseif inst:IsA("BillboardGui") or inst:IsA("SurfaceGui") then
-            inst.Enabled = false
-        elseif inst:IsA("Sound") then
-            inst.Volume = 0
-        elseif inst:IsA("Clouds") then
-            inst.Enabled = false
-            inst.Cover = 0
-        end
-    end)
-end
-
-local function setGameGuiStripped(strip)
-    pcall(function()
-        StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.All, not strip)
-    end)
-
-    for _, gui in ipairs(pGui:GetChildren()) do
-        if gui:IsA("LayerCollector") and gui.Name ~= uiName then
-            if gui.Name == "KickUpgrades" then
-                gui.Enabled = true
-                for _, child in ipairs(gui:GetChildren()) do
-                    if child:IsA("GuiObject") and child.Name ~= "Bonus" and child.Name ~= "PopBonus" then
-                        child.Visible = not strip
-                    end
-                end
-            else
-                gui.Enabled = not strip
-            end
-        end
+table.insert(conns, player.CharacterAdded:Connect(function(newChar)
+    task.wait(0.2)
+    if activeBeachGym and activeBeachGym:IsDescendantOf(Workspace) and autoBeachGym then
+        handledGyms[activeBeachGym] = nil
+        teleportToBeachGym(activeBeachGym)
+    else
+        spawnPlatformUnderPlayer(newChar)
     end
-end
-
-local function applyCleanVoidSky()
-    pcall(function()
-        Workspace.Terrain:Clear()
-        for _, child in ipairs(Workspace.Terrain:GetChildren()) do
-            disableVisualOnly(child)
-        end
-    end)
-
-    pcall(function()
-        Lighting.GlobalShadows = false
-        Lighting.ClockTime = 0
-        Lighting.Brightness = 0
-        Lighting.EnvironmentDiffuseScale = 0
-        Lighting.EnvironmentSpecularScale = 0
-        Lighting.Ambient = Color3.new(0, 0, 0)
-        Lighting.OutdoorAmbient = Color3.new(0, 0, 0)
-        Lighting.FogEnd = 9e9
-
-        for _, eff in ipairs(Lighting:GetChildren()) do
-            if eff:IsA("Sky") and eff.Name ~= "MzD_CleanVoidSky" then
-                eff:Destroy()
-            elseif eff:IsA("PostEffect") or eff:IsA("Atmosphere") then
-                eff.Enabled = false
-            end
-        end
-
-        if not Lighting:FindFirstChild("MzD_CleanVoidSky") then
-            local voidSky = Instance.new("Sky")
-            voidSky.Name = "MzD_CleanVoidSky"
-            voidSky.CelestialBodiesShown = false
-            voidSky.StarCount = 0
-            voidSky.SkyboxBk = "rbxassetid://0"
-            voidSky.SkyboxDn = "rbxassetid://0"
-            voidSky.SkyboxFt = "rbxassetid://0"
-            voidSky.SkyboxLf = "rbxassetid://0"
-            voidSky.SkyboxRt = "rbxassetid://0"
-            voidSky.SkyboxUp = "rbxassetid://0"
-            voidSky.Parent = Lighting
-        end
-
-        settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
-    end)
-end
-
-local function setVoidMode(enabled)
-    voidActive = enabled
-    pcall(function()
-        RunService:Set3dRenderingEnabled(not enabled)
-    end)
-    setGameGuiStripped(enabled)
-
-    if not enabled then return end
-
-    if not activeBeachGym then spawnPlatformUnderPlayer(player.Character) end
-    applyCleanVoidSky()
-
-    if worldHooked then return end
-    worldHooked = true
-
-    local char = player.Character
-    respawnConn = player.CharacterAdded:Connect(function(newChar)
-        if voidActive then
-            task.wait(0.15)
-            if activeBeachGym and activeBeachGym:IsDescendantOf(Workspace) then
-                handledGyms[activeBeachGym] = nil
-                teleportToBeachGym(activeBeachGym)
-            else
-                spawnPlatformUnderPlayer(newChar)
-            end
-        end
-    end)
-
-    local keepWorkspace = {
-        ["Areas"] = true, ["Zones"] = true, ["Machine"] = true, ["KickUpgrades"] = true,
-        ["Players"] = true, ["Camera"] = true, ["Terrain"] = true, ["Debris"] = true,
-        ["MzD_SafePlatform"] = true, [player.Name] = true
-    }
-
-    for _, obj in ipairs(Workspace:GetChildren()) do
-        if not keepWorkspace[obj.Name] and obj ~= char then
-            pcall(function() obj:Destroy() end)
-        elseif keepWorkspace[obj.Name] and obj.Name ~= "Players" and obj.Name ~= "MzD_SafePlatform" and obj.Name ~= "Debris" and obj.Name ~= "Camera" and obj.Name ~= "Terrain" and obj ~= char then
-            for _, p in ipairs(obj:GetDescendants()) do
-                disableVisualOnly(p)
-                if p:IsA("BasePart") then
-                    p.Transparency = 1
-                    p.CastShadow = false
-                elseif p:IsA("Decal") or p:IsA("Texture") then
-                    pcall(function() p:Destroy() end)
-                end
-            end
-        end
-    end
-
-    worldEffectConn = Workspace.DescendantAdded:Connect(function(desc)
-        if voidActive then
-            task.defer(disableVisualOnly, desc)
-        end
-    end)
-
-    guiCleanerConn = pGui.ChildAdded:Connect(function(gui)
-        if voidActive and gui:IsA("LayerCollector") and gui.Name ~= uiName and gui.Name ~= "KickUpgrades" then
-            task.defer(function()
-                pcall(function() gui.Enabled = false end)
-            end)
-        end
-    end)
-
-    terrainConn = Workspace.Terrain.ChildAdded:Connect(function(c)
-        if voidActive then task.defer(disableVisualOnly, c) end
-    end)
-
-    lightingConn = Lighting.ChildAdded:Connect(function(eff)
-        if voidActive and eff.Name ~= "MzD_CleanVoidSky" then
-            task.defer(function()
-                pcall(function()
-                    if eff:IsA("PostEffect") or eff:IsA("Atmosphere") then
-                        eff.Enabled = false
-                    elseif eff:IsA("Sky") then
-                        eff:Destroy()
-                    end
-                end)
-            end)
-        end
-    end)
-
-    local debrisFolder = Workspace:FindFirstChild("Debris")
-    if debrisFolder then
-        for _, dChild in ipairs(debrisFolder:GetChildren()) do
-            if dChild.Name ~= "GymMachine" then pcall(function() dChild:Destroy() end) end
-        end
-        debrisCleanerConn = debrisFolder.ChildAdded:Connect(function(c)
-            if c.Name ~= "GymMachine" then
-                task.wait()
-                if c and c.Parent and c.Name ~= "GymMachine" then pcall(function() c:Destroy() end) end
-            end
-        end)
-    end
-
-    local playersFolder = Workspace:FindFirstChild("Players")
-    if playersFolder then
-        for _, pModel in ipairs(playersFolder:GetChildren()) do
-            if pModel.Name ~= player.Name then pcall(function() pModel:Destroy() end) end
-        end
-        playerCleanerConn = playersFolder.ChildAdded:Connect(function(pModel)
-            if voidActive and pModel.Name ~= player.Name then
-                task.wait()
-                pcall(function() pModel:Destroy() end)
-            end
-        end)
-    end
-
-    local kickUpgrades = pGui:FindFirstChild("KickUpgrades")
-    local popFolder = kickUpgrades and kickUpgrades:FindFirstChild("Pop")
-    if popFolder then
-        popFolder:ClearAllChildren()
-        popCleanerConn = popFolder.ChildAdded:Connect(function(c)
-            task.defer(function() pcall(function() c:Destroy() end) end)
-        end)
-    end
-end
+end))
 
 -- =====================================================================
--- COMPACTE PURE-STATS HUD (Gecentreerd, Hoog Contrast, Nul Ruis)
+-- COMPACTE STATS HUD (Zichtbaar rechtsboven/midden, hoog contrast)
 -- =====================================================================
-local guiWidth, guiHeight = 344, 252
+local guiWidth, guiHeight = 356, 254
 local NeonGreen    = Color3.fromRGB(0, 255, 145)
-local EmeraldGlow  = Color3.fromRGB(16, 200, 118)
 local DeepCyberBg  = Color3.fromRGB(7, 13, 11)
 local PanelCyberBg = Color3.fromRGB(12, 22, 18)
 local CardCyberBg  = Color3.fromRGB(15, 28, 23)
@@ -533,7 +632,7 @@ ScreenGui.Parent = (gethui and gethui()) or CoreGui
 
 local GlowAura = Instance.new("Frame")
 GlowAura.Size = UDim2.new(0, guiWidth + 6, 0, guiHeight + 6)
-GlowAura.Position = UDim2.new(0.5, -((guiWidth + 6) / 2), 0.5, -((guiHeight + 6) / 2))
+GlowAura.Position = UDim2.new(0.5, -((guiWidth + 6) / 2), 0.14, 0)
 GlowAura.BackgroundColor3 = NeonGreen
 GlowAura.BackgroundTransparency = 0.85
 GlowAura.BorderSizePixel = 0
@@ -562,7 +661,6 @@ MainStroke.Color = NeonGreen
 MainStroke.Thickness = 1.8
 MainStroke.Transparency = 0.1
 
--- Header (42px)
 local TopBar = Instance.new("Frame", MainFrame)
 TopBar.Size = UDim2.new(1, 0, 0, 42)
 TopBar.BackgroundColor3 = PanelCyberBg
@@ -599,7 +697,7 @@ TitleLabel.Size = UDim2.new(1, -145, 1, 0)
 TitleLabel.Position = UDim2.new(0, 58, 0, 0)
 TitleLabel.BackgroundTransparency = 1
 TitleLabel.Font = Enum.Font.GothamBlack
-TitleLabel.Text = "MzD KALB // STATS"
+TitleLabel.Text = "MzD KALB // VOID"
 TitleLabel.TextColor3 = TextPure
 TitleLabel.TextSize = 15
 TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
@@ -633,7 +731,6 @@ CloseBtn.TextColor3 = TextPure
 CloseBtn.TextSize = 13
 Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 7)
 
--- Rij 1: 2X / 5X / 10X Multiplier Cards (68px)
 local BoostRow = Instance.new("Frame", MainFrame)
 BoostRow.Size = UDim2.new(1, -20, 0, 68)
 BoostRow.Position = UDim2.new(0, 10, 0, 50)
@@ -680,7 +777,6 @@ Val2xLabel = createStatCard(BoostRow, 0, "2X BOOST", Color3.fromRGB(195, 110, 25
 Val5xLabel = createStatCard(BoostRow, 0.341, "5X BOOST", Color3.fromRGB(255, 160, 45), 25)
 Val10xLabel = createStatCard(BoostRow, 0.682, "10X BOOST", NeonGreen, 25)
 
--- Rij 2: Totaal / Beach Gym / Reactie (56px)
 local TelemetryRow = Instance.new("Frame", MainFrame)
 TelemetryRow.Size = UDim2.new(1, -20, 0, 56)
 TelemetryRow.Position = UDim2.new(0, 10, 0, 126)
@@ -691,21 +787,21 @@ ValGymLabel = createStatCard(TelemetryRow, 0.341, "BEACH GYM", TextMuted, 20)
 ValMsLabel = createStatCard(TelemetryRow, 0.682, "REACTIE", TextMuted, 20)
 ValMsLabel.Text = "0ms"
 
--- Rij 3: Compacte Klikbare Status-Pills (30px)
+-- 4 Klikbare Status-Pills: LIFT | BONUS | GYM TP | AFK
 local PillsRow = Instance.new("Frame", MainFrame)
-PillsRow.Size = UDim2.new(1, -20, 0, 30)
+PillsRow.Size = UDim2.new(1, -20, 0, 32)
 PillsRow.Position = UDim2.new(0, 10, 0, 190)
 PillsRow.BackgroundTransparency = 1
 
 local function createStatusPill(xScale, labelPrefix, defaultState, callback)
     local Pill = Instance.new("TextButton", PillsRow)
-    Pill.Size = UDim2.new(0.318, 0, 1, 0)
+    Pill.Size = UDim2.new(0.238, 0, 1, 0)
     Pill.Position = UDim2.new(xScale, 0, 0, 0)
     Pill.BackgroundColor3 = defaultState and Color3.fromRGB(14, 120, 74) or Color3.fromRGB(35, 38, 37)
     Pill.Font = Enum.Font.GothamBlack
-    Pill.Text = labelPrefix .. (defaultState and ": AAN" or ": UIT")
+    Pill.Text = labelPrefix .. (defaultState and "\nAAN" or "\nUIT")
     Pill.TextColor3 = TextPure
-    Pill.TextSize = 11
+    Pill.TextSize = 10
     Instance.new("UICorner", Pill).CornerRadius = UDim.new(0, 7)
 
     local PStroke = Instance.new("UIStroke", Pill)
@@ -715,15 +811,16 @@ local function createStatusPill(xScale, labelPrefix, defaultState, callback)
     local state = defaultState
     Pill.MouseButton1Click:Connect(function()
         state = not state
-        Pill.Text = labelPrefix .. (state and ": AAN" or ": UIT")
+        Pill.Text = labelPrefix .. (state and "\nAAN" or "\nUIT")
         Pill.BackgroundColor3 = state and Color3.fromRGB(14, 120, 74) or Color3.fromRGB(35, 38, 37)
         PStroke.Color = state and NeonGreen or Color3.fromRGB(75, 85, 80)
         callback(state)
     end)
 end
 
-createStatusPill(0, "BONUS", autoBonus, function(val) autoBonus = val end)
-createStatusPill(0.341, "GYM TP", autoBeachGym, function(val)
+createStatusPill(0, "LIFT", autoLift, function(val) autoLift = val end)
+createStatusPill(0.254, "BONUS", autoBonus, function(val) autoBonus = val end)
+createStatusPill(0.508, "GYM TP", autoBeachGym, function(val)
     autoBeachGym = val
     if val then
         local debris = Workspace:FindFirstChild("Debris")
@@ -735,11 +832,12 @@ createStatusPill(0.341, "GYM TP", autoBeachGym, function(val)
         end
     end
 end)
-createStatusPill(0.682, "VOID", voidActive, function(val)
-    setVoidMode(val)
+createStatusPill(0.762, "AFK", antiAfkEnabled, function(val)
+    antiAfkEnabled = val
+    autoReconnectEnabled = val
+    if val then triggerAfkPulse() end
 end)
 
--- Footer (24px)
 local Footer = Instance.new("Frame", MainFrame)
 Footer.Size = UDim2.new(1, 0, 0, 24)
 Footer.Position = UDim2.new(0, 0, 1, -24)
@@ -762,12 +860,9 @@ FooterStatsLabel.TextColor3 = NeonGreen
 FooterStatsLabel.TextSize = 11
 
 CloseBtn.MouseButton1Click:Connect(function()
-    autoBonus, autoBeachGym, antiAfkEnabled, autoReconnectEnabled = false, false, false, false
-    setVoidMode(false)
+    autoLift, autoBonus, autoBeachGym, antiAfkEnabled, autoReconnectEnabled = false, false, false, false, false
     if setfpscap then pcall(setfpscap, 60) end
-    for _, c in pairs({afkConnection, errorConnection, bonusConn, popCleanerConn, playerCleanerConn, debrisCleanerConn, respawnConn, guiCleanerConn, worldEffectConn, charEffectConn, lightingConn, terrainConn}) do
-        if c then pcall(function() c:Disconnect() end) end
-    end
+    for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
     for _, c in ipairs(gymWatchConns) do pcall(function() c:Disconnect() end) end
     ScreenGui:Destroy()
 end)
@@ -869,13 +964,12 @@ task.spawn(function()
     local kickUpgrades = pGui:WaitForChild("KickUpgrades", 15)
     if kickUpgrades then
         for _, child in ipairs(kickUpgrades:GetChildren()) do watchKickUpgradesChild(child) end
-        bonusConn = kickUpgrades.ChildAdded:Connect(watchKickUpgradesChild)
+        table.insert(conns, kickUpgrades.ChildAdded:Connect(watchKickUpgradesChild))
     end
 end)
 
--- Start direct in Zero-Render + Pure Stats modus
-task.spawn(function()
-    task.wait(0.8)
-    setVoidMode(true)
-    triggerAfkPulse()
-end)
+-- =====================================================================
+-- DIRECT UITVOEREN BIJ START (Sloop wereld + plaats platform + start lift)
+-- =====================================================================
+obliterateWorldNow()
+triggerAfkPulse()
