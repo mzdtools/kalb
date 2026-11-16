@@ -1,5 +1,5 @@
 -- =====================================================================
--- MzD KALB script 
+-- MzD KALB script - Ultra-Void v3.7 (Zero VFX + Direct Auto-Start Lift)
 -- =====================================================================
 
 if setfpscap then pcall(setfpscap, 20) end
@@ -26,7 +26,7 @@ pcall(function()
     RunService:Set3dRenderingEnabled(true)
 end)
 
--- Synchrone Network lookup zodat equip & lift op frame 1 direct werken
+-- Synchrone Network lookup zodat equip & lift direct werken
 local sharedFolder = ReplicatedStorage:FindFirstChild("Shared") or ReplicatedStorage:WaitForChild("Shared", 10)
 local packagesFolder = sharedFolder and (sharedFolder:FindFirstChild("Packages") or sharedFolder:WaitForChild("Packages", 10))
 local networkFolder = packagesFolder and (packagesFolder:FindFirstChild("Network") or packagesFolder:WaitForChild("Network", 10))
@@ -235,7 +235,6 @@ local function disableVisualNoise(inst)
         end
     end)
 
-    -- Verwijder aura/glow/spierbal onderdelen in Camera of op Character
     pcall(function()
         local cam = Workspace.CurrentCamera
         if cam and inst:IsDescendantOf(cam) and inst ~= cam then
@@ -247,7 +246,6 @@ local function disableVisualNoise(inst)
 
         local char = player.Character
         if char and inst:IsDescendantOf(char) then
-            -- Voorkom dat lichaamsdelen kort naar Neon/ForceField flitsen
             if inst:IsA("BasePart") and inst.Parent == char then
                 if inst.Material == Enum.Material.Neon or inst.Material == Enum.Material.ForceField then
                     inst.Material = Enum.Material.SmoothPlastic
@@ -443,7 +441,6 @@ local function obliterateWorldNow()
     end
 end
 
--- Synchrone watchers (geen task.defer, zodat VFX/spierballen op frame 0 verdwijnen)
 table.insert(conns, Workspace.ChildAdded:Connect(function(obj)
     if not obj then return end
     local name = obj.Name
@@ -578,6 +575,7 @@ local function pullWeightFromWeightUI(ignoreCooldown)
     end
 end
 
+local lastEquipTick = 0
 local function stepAutoLift(doClick, ignorePullCooldown)
     if not autoLift then return end
     local char = player.Character
@@ -596,18 +594,43 @@ local function stepAutoLift(doClick, ignorePullCooldown)
             updateDashboard()
         end
         if not isEquipped then
+            lastEquipTick = tick()
             pcall(function() hum:EquipTool(tool) end)
             for _, desc in ipairs(tool:GetDescendants()) do
                 disableVisualNoise(desc)
             end
+            return
         end
+
+        -- Geef Tool.Equipped 0.12s om te initialiseren voordat Activate vuurt
+        if tick() - lastEquipTick < 0.12 then return end
+
         pcall(function() tool:Activate() end)
+        pcall(function()
+            if getconnections then
+                for _, conn in pairs(getconnections(tool.Activated)) do
+                    conn:Fire()
+                end
+            end
+            if firesignal then
+                pcall(firesignal, tool.Activated)
+            end
+        end)
     end
 
     if doClick then
         pcall(function()
             VirtualUser:CaptureController()
             VirtualUser:ClickButton1(Vector2.new(0, 0))
+        end)
+        pcall(function()
+            local cam = Workspace.CurrentCamera
+            if cam then
+                local vp = cam.ViewportSize
+                local tx, ty = vp.X * 0.5, vp.Y * 0.78
+                VirtualInputManager:SendMouseButtonEvent(tx, ty, 0, true, game, 1)
+                VirtualInputManager:SendMouseButtonEvent(tx, ty, 0, false, game, 1)
+            end
         end)
     end
 end
@@ -830,7 +853,12 @@ table.insert(conns, player.CharacterAdded:Connect(function(newChar)
     else
         spawnPlatformUnderPlayer(newChar)
     end
-    stepAutoLift(true, true)
+    local hum = newChar:FindFirstChildOfClass("Humanoid")
+    if hum and autoLift then
+        pcall(function() hum:UnequipTools() end)
+        task.wait(0.15)
+        stepAutoLift(true, true)
+    end
 end))
 
 -- =====================================================================
@@ -1215,5 +1243,14 @@ end
 -- DIRECT UITVOEREN BIJ START (Sloop wereld + pak weight + start lift)
 -- =====================================================================
 obliterateWorldNow()
-stepAutoLift(true, true)
 triggerAfkPulse()
+
+task.spawn(function()
+    local char = player.Character or player.CharacterAdded:Wait()
+    local hum = char:WaitForChild("Humanoid", 10)
+    if hum and autoLift then
+        pcall(function() hum:UnequipTools() end)
+        task.wait(0.15)
+        stepAutoLift(true, true)
+    end
+end)
