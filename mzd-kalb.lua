@@ -1,5 +1,5 @@
 -- =====================================================================
--- MzD KALB script - Ultra-Void v3.5 (Zero VFX + Visible Training)
+-- MzD KALB script 
 -- =====================================================================
 
 if setfpscap then pcall(setfpscap, 20) end
@@ -26,17 +26,23 @@ pcall(function()
     RunService:Set3dRenderingEnabled(true)
 end)
 
-local bonusRemote = nil
-local weightEquipRemote = nil
-task.spawn(function()
-    local shared = ReplicatedStorage:WaitForChild("Shared", 15)
-    local packages = shared and shared:WaitForChild("Packages", 15)
-    local network = packages and packages:WaitForChild("Network", 15)
-    if network then
-        bonusRemote = network:FindFirstChild("rev_TaviMishkal") or network:WaitForChild("rev_TaviMishkal", 10)
-        weightEquipRemote = network:FindFirstChild("rev_WeightEquip") or network:WaitForChild("rev_WeightEquip", 10)
-    end
-end)
+-- Synchrone Network lookup zodat equip & lift op frame 1 direct werken
+local sharedFolder = ReplicatedStorage:FindFirstChild("Shared") or ReplicatedStorage:WaitForChild("Shared", 10)
+local packagesFolder = sharedFolder and (sharedFolder:FindFirstChild("Packages") or sharedFolder:WaitForChild("Packages", 10))
+local networkFolder = packagesFolder and (packagesFolder:FindFirstChild("Network") or packagesFolder:WaitForChild("Network", 10))
+
+local bonusRemote = networkFolder and networkFolder:FindFirstChild("rev_TaviMishkal")
+local weightEquipRemote = networkFolder and networkFolder:FindFirstChild("rev_WeightEquip")
+local vfxRemote = networkFolder and networkFolder:FindFirstChild("rev_VFX_UPD")
+
+-- Blokkeer inkomende server-VFX events (lichaamsgloed / spierbal-triggers)
+if vfxRemote and getconnections then
+    pcall(function()
+        for _, conn in pairs(getconnections(vfxRemote.OnClientEvent)) do
+            if conn.Disable then conn:Disable() end
+        end
+    end)
+end
 
 local uiName = "MzD_KALB_HUD"
 local existing = (gethui and gethui():FindFirstChild(uiName)) or CoreGui:FindFirstChild(uiName)
@@ -107,6 +113,25 @@ local function updateDashboard()
 end
 
 -- =====================================================================
+-- PROPERTY-LOCK HELPER (Voorkomt dat de game UI of VFX terug aanzet)
+-- =====================================================================
+local lockedProps = setmetatable({}, {__mode = "k"})
+local INVISIBLE_SEQ = NumberSequence.new(1)
+local ZERO_SEQ = NumberSequence.new(0)
+
+local function lockProperty(inst, propName, targetValue)
+    if not inst then return end
+    lockedProps[inst] = lockedProps[inst] or {}
+    if lockedProps[inst][propName] then return end
+    lockedProps[inst][propName] = true
+    inst:GetPropertyChangedSignal(propName):Connect(function()
+        if inst[propName] ~= targetValue then
+            pcall(function() inst[propName] = targetValue end)
+        end
+    end)
+end
+
+-- =====================================================================
 -- TRAININGSPLATFORM BEHEER (Altijd grond onder je voeten)
 -- =====================================================================
 local function removeSafePlatform()
@@ -117,7 +142,7 @@ end
 local function spawnPlatformUnderPlayer(char)
     local targetChar = char or player.Character
     if not targetChar then return end
-    local hrp = targetChar:WaitForChild("HumanoidRootPart", 5)
+    local hrp = targetChar:FindFirstChild("HumanoidRootPart") or targetChar:WaitForChild("HumanoidRootPart", 5)
     local hum = targetChar:FindFirstChildOfClass("Humanoid")
     if not hrp then return end
 
@@ -154,22 +179,6 @@ end
 -- =====================================================================
 -- TOTALE WERELD-, VFX- & UI-SLOOP (Geen spierballen, geen lichaamsgloed)
 -- =====================================================================
-local lockedProps = setmetatable({}, {__mode = "k"})
-local INVISIBLE_SEQ = NumberSequence.new(1)
-local ZERO_SEQ = NumberSequence.new(0)
-
-local function lockProperty(inst, propName, targetValue)
-    local key = tostring(inst) .. "_" .. propName
-    if lockedProps[inst] and lockedProps[inst][propName] then return end
-    lockedProps[inst] = lockedProps[inst] or {}
-    lockedProps[inst][propName] = true
-    inst:GetPropertyChangedSignal(propName):Connect(function()
-        if inst[propName] ~= targetValue then
-            pcall(function() inst[propName] = targetValue end)
-        end
-    end)
-end
-
 local function isGymBillboard(inst)
     local df = Workspace:FindFirstChild("Debris")
     local gm = df and df:FindFirstChild("GymMachine")
@@ -226,7 +235,7 @@ local function disableVisualNoise(inst)
         end
     end)
 
-    -- Verwijder tijdelijke aura/glow/spierbal onderdelen op je karakter of in Camera
+    -- Verwijder aura/glow/spierbal onderdelen in Camera of op Character
     pcall(function()
         local cam = Workspace.CurrentCamera
         if cam and inst:IsDescendantOf(cam) and inst ~= cam then
@@ -237,14 +246,27 @@ local function disableVisualNoise(inst)
         end
 
         local char = player.Character
-        if char and inst:IsDescendantOf(char) and (inst:IsA("BasePart") or inst:IsA("Model")) then
-            local lower = string.lower(inst.Name)
-            if string.find(lower, "aura") or string.find(lower, "glow")
-                or string.find(lower, "vfx") or string.find(lower, "effect")
-                or string.find(lower, "burst") or string.find(lower, "ring")
-                or string.find(lower, "shock") or string.find(lower, "muscle")
-                or string.find(lower, "bicep") or string.find(lower, "flex") then
-                inst:Destroy()
+        if char and inst:IsDescendantOf(char) then
+            -- Voorkom dat lichaamsdelen kort naar Neon/ForceField flitsen
+            if inst:IsA("BasePart") and inst.Parent == char then
+                if inst.Material == Enum.Material.Neon or inst.Material == Enum.Material.ForceField then
+                    inst.Material = Enum.Material.SmoothPlastic
+                end
+                inst:GetPropertyChangedSignal("Material"):Connect(function()
+                    if inst.Material == Enum.Material.Neon or inst.Material == Enum.Material.ForceField then
+                        inst.Material = Enum.Material.SmoothPlastic
+                    end
+                end)
+            elseif (inst:IsA("BasePart") or inst:IsA("Model")) and not inst:FindFirstAncestorOfClass("Tool") and not inst:FindFirstAncestorOfClass("Accessory") then
+                local lower = string.lower(inst.Name)
+                if string.find(lower, "aura") or string.find(lower, "glow")
+                    or string.find(lower, "vfx") or string.find(lower, "effect")
+                    or string.find(lower, "burst") or string.find(lower, "ring")
+                    or string.find(lower, "shock") or string.find(lower, "muscle")
+                    or string.find(lower, "bicep") or string.find(lower, "flex")
+                    or string.find(lower, "mesh") or string.find(lower, "part") then
+                    inst:Destroy()
+                end
             end
         end
     end)
@@ -260,11 +282,36 @@ local function filterMainHud(hudGui)
                 local friendsBoost = child:FindFirstChild("FriendsBoost")
                 if friendsBoost and friendsBoost:IsA("GuiObject") then
                     friendsBoost.Visible = false
+                    lockProperty(friendsBoost, "Visible", false)
                 end
             else
                 child.Visible = false
+                lockProperty(child, "Visible", false)
             end
         end
+    end
+end
+
+local function filterKickUpgrades(kuGui)
+    if not kuGui then return end
+    kuGui.Enabled = true
+    for _, child in ipairs(kuGui:GetChildren()) do
+        if child:IsA("GuiObject") and child.Name ~= "Bonus" and child.Name ~= "PopBonus" then
+            child.Visible = false
+            lockProperty(child, "Visible", false)
+        end
+    end
+end
+
+local function lockDisabledScreenGui(gui)
+    if not gui or not gui:IsA("LayerCollector") then return end
+    gui.Enabled = false
+    lockProperty(gui, "Enabled", false)
+    if gui.Name == "GUI_Effects" or gui.Name == "FallGUIEffects" then
+        pcall(function() gui:ClearAllChildren() end)
+        gui.ChildAdded:Connect(function(c)
+            pcall(function() c:Destroy() end)
+        end)
     end
 end
 
@@ -276,16 +323,11 @@ local function stripAllGameGuis()
     for _, gui in ipairs(pGui:GetChildren()) do
         if gui:IsA("LayerCollector") and gui.Name ~= uiName then
             if gui.Name == "KickUpgrades" then
-                gui.Enabled = true
-                for _, child in ipairs(gui:GetChildren()) do
-                    if child:IsA("GuiObject") and child.Name ~= "Bonus" and child.Name ~= "PopBonus" then
-                        child.Visible = false
-                    end
-                end
+                filterKickUpgrades(gui)
             elseif gui.Name == "HUD" then
                 filterMainHud(gui)
             else
-                gui.Enabled = false
+                lockDisabledScreenGui(gui)
             end
         end
     end
@@ -401,74 +443,69 @@ local function obliterateWorldNow()
     end
 end
 
+-- Synchrone watchers (geen task.defer, zodat VFX/spierballen op frame 0 verdwijnen)
 table.insert(conns, Workspace.ChildAdded:Connect(function(obj)
-    task.defer(function()
-        if not obj or not obj.Parent then return end
-        local name = obj.Name
-        if name == "MzD_SafePlatform" or name == "Camera" or name == "Terrain"
-            or name == "Players" or name == "Debris" or name == player.Name
-            or obj == player.Character then
-            return
-        end
-        if name == "Areas" or name == "Zones" or name == "Machine" or name == "KickUpgrades" then
-            pcall(function() obj:ClearAllChildren() end)
-            return
-        end
-        pcall(function() obj:Destroy() end)
-    end)
+    if not obj then return end
+    local name = obj.Name
+    if name == "MzD_SafePlatform" or name == "Camera" or name == "Terrain"
+        or name == "Players" or name == "Debris" or name == player.Name
+        or obj == player.Character then
+        return
+    end
+    if name == "Areas" or name == "Zones" or name == "Machine" or name == "KickUpgrades" then
+        pcall(function() obj:ClearAllChildren() end)
+        return
+    end
+    pcall(function() obj:Destroy() end)
 end))
 
 table.insert(conns, Workspace.DescendantAdded:Connect(function(desc)
-    task.defer(function()
-        if not desc or not desc.Parent then return end
-        local pf = Workspace:FindFirstChild("Players")
-        if pf and desc.Parent == pf and desc.Name ~= player.Name then
-            pcall(function() desc:Destroy() end)
-            return
-        end
-        local df = Workspace:FindFirstChild("Debris")
-        if df and desc.Parent == df and desc.Name ~= "GymMachine" then
-            pcall(function() desc:Destroy() end)
-            return
-        end
-        local gm = df and df:FindFirstChild("GymMachine")
-        if gm and desc.Parent == gm and string.lower(desc.Name) ~= "beach gym" then
-            pcall(function() desc:Destroy() end)
-            return
-        end
-        disableVisualNoise(desc)
-    end)
+    if not desc then return end
+    local pf = Workspace:FindFirstChild("Players")
+    if pf and desc.Parent == pf and desc.Name ~= player.Name then
+        pcall(function() desc:Destroy() end)
+        return
+    end
+    local df = Workspace:FindFirstChild("Debris")
+    if df and desc.Parent == df and desc.Name ~= "GymMachine" then
+        pcall(function() desc:Destroy() end)
+        return
+    end
+    local gm = df and df:FindFirstChild("GymMachine")
+    if gm and desc.Parent == gm and string.lower(desc.Name) ~= "beach gym" then
+        pcall(function() desc:Destroy() end)
+        return
+    end
+    disableVisualNoise(desc)
 end))
 
 table.insert(conns, pGui.ChildAdded:Connect(function(gui)
-    task.defer(function()
-        if gui and gui.Parent and gui:IsA("LayerCollector") and gui.Name ~= uiName then
-            if gui.Name == "KickUpgrades" or gui.Name == "HUD" then
-                stripAllGameGuis()
-            else
-                pcall(function() gui.Enabled = false end)
-            end
+    if gui and gui:IsA("LayerCollector") and gui.Name ~= uiName then
+        if gui.Name == "KickUpgrades" then
+            filterKickUpgrades(gui)
+        elseif gui.Name == "HUD" then
+            filterMainHud(gui)
+        else
+            lockDisabledScreenGui(gui)
         end
-    end)
+    end
 end))
 
 local existingHud = pGui:FindFirstChild("HUD")
 if existingHud then
     table.insert(conns, existingHud.ChildAdded:Connect(function()
-        task.defer(function() filterMainHud(existingHud) end)
+        filterMainHud(existingHud)
     end))
 end
 
 table.insert(conns, Lighting.ChildAdded:Connect(function(eff)
-    task.defer(function()
-        if eff and eff.Parent and eff.Name ~= "MzD_VoidSky" then
-            pcall(function() eff:Destroy() end)
-        end
-    end)
+    if eff and eff.Name ~= "MzD_VoidSky" then
+        pcall(function() eff:Destroy() end)
+    end
 end))
 
 -- =====================================================================
--- EXACTE WEIGHT EQUIP (Uit Backpack of WeightUI) & AUTO-LIFT
+-- EXACTE WEIGHT EQUIP & DIRECT STARTEN MET TRAINEN
 -- =====================================================================
 local function getBestWeightTool()
     local bestTool = nil
@@ -507,8 +544,8 @@ local function getBestWeightTool()
 end
 
 local lastInventoryPull = 0
-local function pullWeightFromWeightUI()
-    if tick() - lastInventoryPull < 2.5 then return end
+local function pullWeightFromWeightUI(ignoreCooldown)
+    if not ignoreCooldown and (tick() - lastInventoryPull < 2.0) then return end
     lastInventoryPull = tick()
 
     local frames = pGui:FindFirstChild("Frames")
@@ -535,51 +572,55 @@ local function pullWeightFromWeightUI()
                     end
                 end)
             end
-            task.wait(0.15)
             local found = getBestWeightTool()
             if found then return end
         end
     end
 end
 
+local function stepAutoLift(doClick, ignorePullCooldown)
+    if not autoLift then return end
+    local char = player.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 then return end
+
+    local tool, isEquipped = getBestWeightTool()
+    if not tool then
+        pullWeightFromWeightUI(ignorePullCooldown)
+        tool, isEquipped = getBestWeightTool()
+    end
+
+    if tool then
+        if activeWeightName ~= tool.Name then
+            activeWeightName = tool.Name
+            updateDashboard()
+        end
+        if not isEquipped then
+            pcall(function() hum:EquipTool(tool) end)
+            for _, desc in ipairs(tool:GetDescendants()) do
+                disableVisualNoise(desc)
+            end
+        end
+        pcall(function() tool:Activate() end)
+    end
+
+    if doClick then
+        pcall(function()
+            VirtualUser:CaptureController()
+            VirtualUser:ClickButton1(Vector2.new(0, 0))
+        end)
+    end
+end
+
 task.spawn(function()
     local clickTick = 0
     while true do
-        task.wait(0.08)
+        task.wait(0.06)
         if not CoreGui:FindFirstChild(uiName) and not (gethui and gethui():FindFirstChild(uiName)) then
             break
         end
-        if autoLift then
-            local char = player.Character
-            local hum = char and char:FindFirstChildOfClass("Humanoid")
-            if hum and hum.Health > 0 then
-                local tool, isEquipped = getBestWeightTool()
-                if not tool then
-                    task.spawn(pullWeightFromWeightUI)
-                else
-                    if activeWeightName ~= tool.Name then
-                        activeWeightName = tool.Name
-                        updateDashboard()
-                    end
-                    if not isEquipped then
-                        pcall(function() hum:EquipTool(tool) end)
-                        for _, desc in ipairs(tool:GetDescendants()) do
-                            disableVisualNoise(desc)
-                        end
-                    else
-                        pcall(function() tool:Activate() end)
-                    end
-                end
-
-                clickTick = clickTick + 1
-                if clickTick % 2 == 0 then
-                    pcall(function()
-                        VirtualUser:CaptureController()
-                        VirtualUser:ClickButton1(Vector2.new(0, 0))
-                    end)
-                end
-            end
-        end
+        clickTick = clickTick + 1
+        stepAutoLift(clickTick % 2 == 0, false)
     end
 end)
 
@@ -779,7 +820,7 @@ end
 setupBeachGymWatcher()
 
 table.insert(conns, player.CharacterAdded:Connect(function(newChar)
-    task.wait(0.2)
+    task.wait(0.15)
     for _, desc in ipairs(newChar:GetDescendants()) do
         disableVisualNoise(desc)
     end
@@ -789,6 +830,7 @@ table.insert(conns, player.CharacterAdded:Connect(function(newChar)
     else
         spawnPlatformUnderPlayer(newChar)
     end
+    stepAutoLift(true, true)
 end))
 
 -- =====================================================================
@@ -1007,7 +1049,9 @@ end
 
 createStatusPill(0, "LIFT", autoLift, function(val)
     autoLift = val
-    if not val then
+    if val then
+        stepAutoLift(true, true)
+    else
         local char = player.Character
         local hum = char and char:FindFirstChildOfClass("Humanoid")
         if hum then
@@ -1156,19 +1200,20 @@ local function watchKickUpgradesChild(child)
         child:GetPropertyChangedSignal("Visible"):Connect(function()
             if child.Visible then task.spawn(activateBonusButton, child) end
         end)
+    else
+        filterKickUpgrades(child.Parent)
     end
 end
 
-task.spawn(function()
-    local kickUpgrades = pGui:WaitForChild("KickUpgrades", 15)
-    if kickUpgrades then
-        for _, child in ipairs(kickUpgrades:GetChildren()) do watchKickUpgradesChild(child) end
-        table.insert(conns, kickUpgrades.ChildAdded:Connect(watchKickUpgradesChild))
-    end
-end)
+local kickUpgrades = pGui:FindFirstChild("KickUpgrades")
+if kickUpgrades then
+    for _, child in ipairs(kickUpgrades:GetChildren()) do watchKickUpgradesChild(child) end
+    table.insert(conns, kickUpgrades.ChildAdded:Connect(watchKickUpgradesChild))
+end
 
 -- =====================================================================
--- DIRECT UITVOEREN BIJ START
+-- DIRECT UITVOEREN BIJ START (Sloop wereld + pak weight + start lift)
 -- =====================================================================
 obliterateWorldNow()
+stepAutoLift(true, true)
 triggerAfkPulse()
