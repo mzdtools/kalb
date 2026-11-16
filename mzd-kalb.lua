@@ -1,5 +1,5 @@
 -- =====================================================================
--- MzD KALB script - Ultra-Void v3.7 (Zero VFX + Direct Auto-Start Lift)
+-- MzD KALB script
 -- =====================================================================
 
 if setfpscap then pcall(setfpscap, 20) end
