@@ -1,5 +1,5 @@
 -- =====================================================================
--- MzD KALB script - Ultra-Void v3.3 (Total World Wipe + Exact Weight Equip)
+-- MzD KALB script - Ultra-Void v3.4 (Total World Wipe + BottomLeft HUD)
 -- =====================================================================
 
 if setfpscap then pcall(setfpscap, 20) end
@@ -151,7 +151,7 @@ local function spawnPlatformUnderPlayer(char)
 end
 
 -- =====================================================================
--- TOTALE WERELD- & UI-SLOOP (Alleen jij, je platform & Beach Gym)
+-- TOTALE WERELD- & UI-SLOOP (Alleen jij, platform, Gym & BottomLeft HUD)
 -- =====================================================================
 local trackedEffects = setmetatable({}, {__mode = "k"})
 
@@ -184,6 +184,24 @@ local function disableVisualNoise(inst)
     end)
 end
 
+local function filterMainHud(hudGui)
+    if not hudGui then return end
+    hudGui.Enabled = true
+    for _, child in ipairs(hudGui:GetChildren()) do
+        if child:IsA("GuiObject") then
+            if child.Name == "BottomLeft" then
+                child.Visible = true
+                local friendsBoost = child:FindFirstChild("FriendsBoost")
+                if friendsBoost and friendsBoost:IsA("GuiObject") then
+                    friendsBoost.Visible = false
+                end
+            else
+                child.Visible = false
+            end
+        end
+    end
+end
+
 local function stripAllGameGuis()
     pcall(function()
         StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.All, false)
@@ -198,6 +216,8 @@ local function stripAllGameGuis()
                         child.Visible = false
                     end
                 end
+            elseif gui.Name == "HUD" then
+                filterMainHud(gui)
             else
                 gui.Enabled = false
             end
@@ -352,7 +372,7 @@ end))
 table.insert(conns, pGui.ChildAdded:Connect(function(gui)
     task.defer(function()
         if gui and gui.Parent and gui:IsA("LayerCollector") and gui.Name ~= uiName then
-            if gui.Name == "KickUpgrades" then
+            if gui.Name == "KickUpgrades" or gui.Name == "HUD" then
                 stripAllGameGuis()
             else
                 pcall(function() gui.Enabled = false end)
@@ -360,6 +380,13 @@ table.insert(conns, pGui.ChildAdded:Connect(function(gui)
         end
     end)
 end))
+
+local existingHud = pGui:FindFirstChild("HUD")
+if existingHud then
+    table.insert(conns, existingHud.ChildAdded:Connect(function()
+        task.defer(function() filterMainHud(existingHud) end)
+    end))
+end
 
 table.insert(conns, Lighting.ChildAdded:Connect(function(eff)
     task.defer(function()
@@ -877,6 +904,8 @@ local function createStatusPill(xScale, labelPrefix, defaultState, callback)
     Pill.Text = labelPrefix .. (defaultState and "\nAAN" or "\nUIT")
     Pill.TextColor3 = TextPure
     Pill.TextSize = 10
+    Pill.Active = true
+    Pill.AutoButtonColor = true
     Instance.new("UICorner", Pill).CornerRadius = UDim.new(0, 7)
 
     local PStroke = Instance.new("UIStroke", Pill)
@@ -884,17 +913,34 @@ local function createStatusPill(xScale, labelPrefix, defaultState, callback)
     PStroke.Thickness = 1.2
 
     local state = defaultState
-    Pill.MouseButton1Click:Connect(function()
+    local lastToggle = 0
+    local function toggleState()
+        if tick() - lastToggle < 0.15 then return end
+        lastToggle = tick()
         state = not state
         Pill.Text = labelPrefix .. (state and "\nAAN" or "\nUIT")
         Pill.BackgroundColor3 = state and Color3.fromRGB(14, 120, 74) or Color3.fromRGB(35, 38, 37)
         PStroke.Color = state and NeonGreen or Color3.fromRGB(75, 85, 80)
         callback(state)
-    end)
+    end
+
+    Pill.Activated:Connect(toggleState)
+    Pill.MouseButton1Click:Connect(toggleState)
 end
 
-createStatusPill(0, "LIFT", autoLift, function(val) autoLift = val end)
+createStatusPill(0, "LIFT", autoLift, function(val)
+    autoLift = val
+    if not val then
+        local char = player.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if hum then
+            pcall(function() hum:UnequipTools() end)
+        end
+    end
+end)
+
 createStatusPill(0.254, "BONUS", autoBonus, function(val) autoBonus = val end)
+
 createStatusPill(0.508, "GYM TP", autoBeachGym, function(val)
     autoBeachGym = val
     if val then
@@ -907,6 +953,7 @@ createStatusPill(0.508, "GYM TP", autoBeachGym, function(val)
         end
     end
 end)
+
 createStatusPill(0.762, "AFK", antiAfkEnabled, function(val)
     antiAfkEnabled = val
     autoReconnectEnabled = val
