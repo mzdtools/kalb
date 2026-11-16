@@ -9,6 +9,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 local Lighting = game:GetService("Lighting")
 local StarterGui = game:GetService("StarterGui")
+local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 local VirtualUser = game:GetService("VirtualUser")
@@ -39,28 +40,32 @@ local autoBonus = true
 local autoBeachGym = true
 local antiAfkEnabled = true
 local autoReconnectEnabled = true
-local fpsCapEnabled = true
-local worldWiped = false
+local voidActive = true
+local worldHooked = false
 
 local count2x, count5x, count10x, totalBonusCount = 0, 0, 0, 0
 local gymTpCount, lastReactionMs, afkPulses = 0, 0, 0
-local isMinimized = false
 local lastSeenMultiplier = "x2"
 local lastBonusSpawnTick = 0
 local activeBeachGym = nil
 
 local afkConnection, errorConnection, bonusConn, popCleanerConn = nil, nil, nil, nil
-local playerCleanerConn, debrisCleanerConn, respawnConn = nil, nil, nil
+local playerCleanerConn, debrisCleanerConn, respawnConn, guiCleanerConn = nil, nil, nil, nil
 local worldEffectConn, charEffectConn, lightingConn, terrainConn = nil, nil, nil, nil
 local gymWatchConns = {}
-local Val2xLabel, Val5xLabel, Val10xLabel, FooterStatsLabel = nil, nil, nil, nil
+
+local Val2xLabel, Val5xLabel, Val10xLabel = nil, nil, nil
+local ValTotalLabel, ValGymLabel, ValMsLabel, FooterStatsLabel = nil, nil, nil, nil
 
 local function updateDashboard()
     if Val2xLabel then Val2xLabel.Text = tostring(count2x) end
     if Val5xLabel then Val5xLabel.Text = tostring(count5x) end
     if Val10xLabel then Val10xLabel.Text = tostring(count10x) end
+    if ValTotalLabel then ValTotalLabel.Text = tostring(totalBonusCount) end
+    if ValGymLabel then ValGymLabel.Text = tostring(gymTpCount) end
+    if ValMsLabel then ValMsLabel.Text = tostring(lastReactionMs) .. "ms" end
     if FooterStatsLabel then
-        FooterStatsLabel.Text = string.format("TOT: %d  |  GYM: %d  |  AFK: %d  |  20 FPS", totalBonusCount, gymTpCount, afkPulses)
+        FooterStatsLabel.Text = string.format("AFK PULSEN: %d  |  RECONNECT: AAN  |  20 FPS", afkPulses)
     end
 end
 
@@ -96,7 +101,7 @@ task.spawn(function()
     while true do
         task.wait(180)
         if not CoreGui:FindFirstChild(uiName) and not (gethui and gethui():FindFirstChild(uiName)) then break end
-        if fpsCapEnabled and setfpscap then pcall(setfpscap, 20) end
+        if setfpscap then pcall(setfpscap, 20) end
         if antiAfkEnabled then
             cycle = cycle + 1
             triggerAfkPulse()
@@ -294,18 +299,8 @@ end
 setupBeachGymWatcher()
 
 -- =====================================================================
--- CRASH-SAFE ULTRA-VOID (Zet effecten uit op .Enabled = false i.p.v. slopen)
+-- ZERO-RENDER & GAME-UI STRIPPER (Alleen Stats-HUD Blijft Zichtbaar)
 -- =====================================================================
-local validBodyParts = {
-    ["Head"] = true, ["Torso"] = true, ["HumanoidRootPart"] = true,
-    ["Left Arm"] = true, ["Right Arm"] = true, ["Left Leg"] = true, ["Right Leg"] = true,
-    ["UpperTorso"] = true, ["LowerTorso"] = true,
-    ["LeftUpperArm"] = true, ["LeftLowerArm"] = true, ["LeftHand"] = true,
-    ["RightUpperArm"] = true, ["RightLowerArm"] = true, ["RightHand"] = true,
-    ["LeftUpperLeg"] = true, ["LeftLowerLeg"] = true, ["LeftFoot"] = true,
-    ["RightUpperLeg"] = true, ["RightLowerLeg"] = true, ["RightFoot"] = true
-}
-
 local trackedEffects = setmetatable({}, {__mode = "k"})
 
 local function disableVisualOnly(inst)
@@ -319,17 +314,11 @@ local function disableVisualOnly(inst)
             if not trackedEffects[inst] then
                 trackedEffects[inst] = true
                 inst:GetPropertyChangedSignal("Enabled"):Connect(function()
-                    if worldWiped and inst.Enabled then
-                        inst.Enabled = false
-                    end
+                    if voidActive and inst.Enabled then inst.Enabled = false end
                 end)
             end
         elseif inst:IsA("BillboardGui") or inst:IsA("SurfaceGui") then
-            -- Laat de Gym-teller op Beach Gym zichtbaar, schakel overige popups uit
-            local gm = Workspace:FindFirstChild("Debris") and Workspace.Debris:FindFirstChild("GymMachine")
-            if not (gm and inst:IsDescendantOf(gm)) then
-                inst.Enabled = false
-            end
+            inst.Enabled = false
         elseif inst:IsA("Sound") then
             inst.Volume = 0
         elseif inst:IsA("Clouds") then
@@ -339,32 +328,25 @@ local function disableVisualOnly(inst)
     end)
 end
 
-local function stripCharacterEffectsOnly(char)
-    if not char then return end
+local function setGameGuiStripped(strip)
+    pcall(function()
+        StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.All, not strip)
+    end)
 
-    local function cleanDesc(desc)
-        if not desc or not desc.Parent then return end
-        disableVisualOnly(desc)
-        if desc:IsA("BasePart") then
-            desc.CastShadow = false
-            local isAccessory = desc:FindFirstAncestorWhichIsA("Accessory") ~= nil
-            local isTool = desc:FindFirstAncestorWhichIsA("Tool") ~= nil
-            if not validBodyParts[desc.Name] and not isAccessory and not isTool then
-                desc.Transparency = 1
+    for _, gui in ipairs(pGui:GetChildren()) do
+        if gui:IsA("LayerCollector") and gui.Name ~= uiName then
+            if gui.Name == "KickUpgrades" then
+                gui.Enabled = true
+                for _, child in ipairs(gui:GetChildren()) do
+                    if child:IsA("GuiObject") and child.Name ~= "Bonus" and child.Name ~= "PopBonus" then
+                        child.Visible = not strip
+                    end
+                end
+            else
+                gui.Enabled = not strip
             end
         end
     end
-
-    for _, desc in ipairs(char:GetDescendants()) do
-        cleanDesc(desc)
-    end
-
-    if charEffectConn then charEffectConn:Disconnect() end
-    charEffectConn = char.DescendantAdded:Connect(function(desc)
-        if worldWiped then
-            task.defer(cleanDesc, desc)
-        end
-    end)
 end
 
 local function applyCleanVoidSky()
@@ -377,12 +359,12 @@ local function applyCleanVoidSky()
 
     pcall(function()
         Lighting.GlobalShadows = false
-        Lighting.ClockTime = 12
-        Lighting.Brightness = 0.65
+        Lighting.ClockTime = 0
+        Lighting.Brightness = 0
         Lighting.EnvironmentDiffuseScale = 0
         Lighting.EnvironmentSpecularScale = 0
-        Lighting.Ambient = Color3.fromRGB(135, 145, 140)
-        Lighting.OutdoorAmbient = Color3.fromRGB(135, 145, 140)
+        Lighting.Ambient = Color3.new(0, 0, 0)
+        Lighting.OutdoorAmbient = Color3.new(0, 0, 0)
         Lighting.FogEnd = 9e9
 
         for _, eff in ipairs(Lighting:GetChildren()) do
@@ -411,19 +393,25 @@ local function applyCleanVoidSky()
     end)
 end
 
-local function enableVoidMode()
+local function setVoidMode(enabled)
+    voidActive = enabled
+    pcall(function()
+        RunService:Set3dRenderingEnabled(not enabled)
+    end)
+    setGameGuiStripped(enabled)
+
+    if not enabled then return end
+
     if not activeBeachGym then spawnPlatformUnderPlayer(player.Character) end
-    stripCharacterEffectsOnly(player.Character)
     applyCleanVoidSky()
 
-    if worldWiped then return end
-    worldWiped = true
+    if worldHooked then return end
+    worldHooked = true
 
     local char = player.Character
     respawnConn = player.CharacterAdded:Connect(function(newChar)
-        if worldWiped then
+        if voidActive then
             task.wait(0.15)
-            stripCharacterEffectsOnly(newChar)
             if activeBeachGym and activeBeachGym:IsDescendantOf(Workspace) then
                 handledGyms[activeBeachGym] = nil
                 teleportToBeachGym(activeBeachGym)
@@ -455,21 +443,26 @@ local function enableVoidMode()
         end
     end
 
-    -- Veilig uitschakelen via task.defer zodat game-scripts nooit crashen
     worldEffectConn = Workspace.DescendantAdded:Connect(function(desc)
-        if worldWiped then
+        if voidActive then
             task.defer(disableVisualOnly, desc)
         end
     end)
 
-    terrainConn = Workspace.Terrain.ChildAdded:Connect(function(c)
-        if worldWiped then
-            task.defer(disableVisualOnly, c)
+    guiCleanerConn = pGui.ChildAdded:Connect(function(gui)
+        if voidActive and gui:IsA("LayerCollector") and gui.Name ~= uiName and gui.Name ~= "KickUpgrades" then
+            task.defer(function()
+                pcall(function() gui.Enabled = false end)
+            end)
         end
     end)
 
+    terrainConn = Workspace.Terrain.ChildAdded:Connect(function(c)
+        if voidActive then task.defer(disableVisualOnly, c) end
+    end)
+
     lightingConn = Lighting.ChildAdded:Connect(function(eff)
-        if worldWiped and eff.Name ~= "MzD_CleanVoidSky" then
+        if voidActive and eff.Name ~= "MzD_CleanVoidSky" then
             task.defer(function()
                 pcall(function()
                     if eff:IsA("PostEffect") or eff:IsA("Atmosphere") then
@@ -498,29 +491,15 @@ local function enableVoidMode()
     local playersFolder = Workspace:FindFirstChild("Players")
     if playersFolder then
         for _, pModel in ipairs(playersFolder:GetChildren()) do
-            if pModel.Name ~= player.Name then
-                pcall(function() pModel:Destroy() end)
-            else
-                stripCharacterEffectsOnly(pModel)
-            end
+            if pModel.Name ~= player.Name then pcall(function() pModel:Destroy() end) end
         end
         playerCleanerConn = playersFolder.ChildAdded:Connect(function(pModel)
-            if worldWiped then
+            if voidActive and pModel.Name ~= player.Name then
                 task.wait()
-                if pModel.Name ~= player.Name then
-                    pcall(function() pModel:Destroy() end)
-                else
-                    stripCharacterEffectsOnly(pModel)
-                end
+                pcall(function() pModel:Destroy() end)
             end
         end)
     end
-
-    pcall(function()
-        StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.PlayerList, false)
-        StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Chat, false)
-        StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.EmotesMenu, false)
-    end)
 
     local kickUpgrades = pGui:FindFirstChild("KickUpgrades")
     local popFolder = kickUpgrades and kickUpgrades:FindFirstChild("Pop")
@@ -533,26 +512,28 @@ local function enableVoidMode()
 end
 
 -- =====================================================================
--- HD HIGH-CONTRAST HUD (Speciaal gebouwd voor 676x380 & lage DPI)
+-- COMPACTE PURE-STATS HUD (Gecentreerd, Hoog Contrast, Nul Ruis)
 -- =====================================================================
-local fullHeight, minHeight, guiWidth = 342, 70, 390
+local guiWidth, guiHeight = 344, 252
 local NeonGreen    = Color3.fromRGB(0, 255, 145)
-local EmeraldGlow  = Color3.fromRGB(16, 215, 125)
-local DeepCyberBg  = Color3.fromRGB(6, 11, 9)
+local EmeraldGlow  = Color3.fromRGB(16, 200, 118)
+local DeepCyberBg  = Color3.fromRGB(7, 13, 11)
 local PanelCyberBg = Color3.fromRGB(12, 22, 18)
 local CardCyberBg  = Color3.fromRGB(15, 28, 23)
 local TextPure     = Color3.fromRGB(255, 255, 255)
+local TextMuted    = Color3.fromRGB(145, 205, 178)
 
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = uiName
 ScreenGui.ResetOnSpawn = false
 ScreenGui.IgnoreGuiInset = true
+ScreenGui.DisplayOrder = 999999
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.Parent = (gethui and gethui()) or CoreGui
 
 local GlowAura = Instance.new("Frame")
-GlowAura.Size = UDim2.new(0, guiWidth + 6, 0, fullHeight + 6)
-GlowAura.Position = UDim2.new(0.5, -((guiWidth + 6) / 2), 0.5, -((fullHeight + 6) / 2))
+GlowAura.Size = UDim2.new(0, guiWidth + 6, 0, guiHeight + 6)
+GlowAura.Position = UDim2.new(0.5, -((guiWidth + 6) / 2), 0.5, -((guiHeight + 6) / 2))
 GlowAura.BackgroundColor3 = NeonGreen
 GlowAura.BackgroundTransparency = 0.85
 GlowAura.BorderSizePixel = 0
@@ -568,7 +549,7 @@ AuraStroke.Thickness = 2
 AuraStroke.Transparency = 0.45
 
 local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, guiWidth, 0, fullHeight)
+MainFrame.Size = UDim2.new(0, guiWidth, 0, guiHeight)
 MainFrame.Position = UDim2.new(0, 3, 0, 3)
 MainFrame.BackgroundColor3 = DeepCyberBg
 MainFrame.BorderSizePixel = 0
@@ -581,8 +562,9 @@ MainStroke.Color = NeonGreen
 MainStroke.Thickness = 1.8
 MainStroke.Transparency = 0.1
 
+-- Header (42px)
 local TopBar = Instance.new("Frame", MainFrame)
-TopBar.Size = UDim2.new(1, 0, 0, 46)
+TopBar.Size = UDim2.new(1, 0, 0, 42)
 TopBar.BackgroundColor3 = PanelCyberBg
 TopBar.BorderSizePixel = 0
 
@@ -594,15 +576,15 @@ TopDivider.BackgroundTransparency = 0.35
 TopDivider.BorderSizePixel = 0
 
 local LogoHolder = Instance.new("Frame", TopBar)
-LogoHolder.Size = UDim2.new(0, 42, 0, 32)
-LogoHolder.Position = UDim2.new(0, 10, 0.5, -16)
+LogoHolder.Size = UDim2.new(0, 40, 0, 28)
+LogoHolder.Position = UDim2.new(0, 10, 0.5, -14)
 LogoHolder.BackgroundColor3 = Color3.fromRGB(10, 32, 24)
 LogoHolder.BorderSizePixel = 0
-Instance.new("UICorner", LogoHolder).CornerRadius = UDim.new(0, 8)
+Instance.new("UICorner", LogoHolder).CornerRadius = UDim.new(0, 7)
 
 local LogoStroke = Instance.new("UIStroke", LogoHolder)
 LogoStroke.Color = NeonGreen
-LogoStroke.Thickness = 1.6
+LogoStroke.Thickness = 1.5
 
 local LogoTextM = Instance.new("TextLabel", LogoHolder)
 LogoTextM.Size = UDim2.new(1, 0, 1, 0)
@@ -610,26 +592,26 @@ LogoTextM.BackgroundTransparency = 1
 LogoTextM.Font = Enum.Font.GothamBlack
 LogoTextM.Text = "MzD"
 LogoTextM.TextColor3 = NeonGreen
-LogoTextM.TextSize = 15
+LogoTextM.TextSize = 14
 
 local TitleLabel = Instance.new("TextLabel", TopBar)
-TitleLabel.Size = UDim2.new(1, -178, 1, 0)
-TitleLabel.Position = UDim2.new(0, 60, 0, 0)
+TitleLabel.Size = UDim2.new(1, -145, 1, 0)
+TitleLabel.Position = UDim2.new(0, 58, 0, 0)
 TitleLabel.BackgroundTransparency = 1
 TitleLabel.Font = Enum.Font.GothamBlack
-TitleLabel.Text = "MzD KALB"
+TitleLabel.Text = "MzD KALB // STATS"
 TitleLabel.TextColor3 = TextPure
-TitleLabel.TextSize = 17
+TitleLabel.TextSize = 15
 TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
 
 local ZoomBtn = Instance.new("TextButton", TopBar)
-ZoomBtn.Size = UDim2.new(0, 42, 0, 30)
-ZoomBtn.Position = UDim2.new(1, -114, 0.5, -15)
+ZoomBtn.Size = UDim2.new(0, 42, 0, 28)
+ZoomBtn.Position = UDim2.new(1, -82, 0.5, -14)
 ZoomBtn.BackgroundColor3 = Color3.fromRGB(18, 42, 33)
 ZoomBtn.Font = Enum.Font.GothamBlack
 ZoomBtn.Text = "1.0x"
 ZoomBtn.TextColor3 = NeonGreen
-ZoomBtn.TextSize = 13
+ZoomBtn.TextSize = 12
 Instance.new("UICorner", ZoomBtn).CornerRadius = UDim.new(0, 7)
 
 local zoomLevels = {1.0, 1.2, 1.35}
@@ -641,33 +623,24 @@ ZoomBtn.MouseButton1Click:Connect(function()
     TweenService:Create(UiScaler, TweenInfo.new(0.15), {Scale = newScale}):Play()
 end)
 
-local MinBtn = Instance.new("TextButton", TopBar)
-MinBtn.Size = UDim2.new(0, 30, 0, 30)
-MinBtn.Position = UDim2.new(1, -68, 0.5, -15)
-MinBtn.BackgroundColor3 = Color3.fromRGB(18, 42, 33)
-MinBtn.Font = Enum.Font.GothamBlack
-MinBtn.Text = "-"
-MinBtn.TextColor3 = NeonGreen
-MinBtn.TextSize = 18
-Instance.new("UICorner", MinBtn).CornerRadius = UDim.new(0, 7)
-
 local CloseBtn = Instance.new("TextButton", TopBar)
-CloseBtn.Size = UDim2.new(0, 30, 0, 30)
-CloseBtn.Position = UDim2.new(1, -34, 0.5, -15)
+CloseBtn.Size = UDim2.new(0, 28, 0, 28)
+CloseBtn.Position = UDim2.new(1, -36, 0.5, -14)
 CloseBtn.BackgroundColor3 = Color3.fromRGB(185, 35, 50)
 CloseBtn.Font = Enum.Font.GothamBlack
 CloseBtn.Text = "X"
 CloseBtn.TextColor3 = TextPure
-CloseBtn.TextSize = 14
+CloseBtn.TextSize = 13
 Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 7)
 
-local CardsContainer = Instance.new("Frame", MainFrame)
-CardsContainer.Size = UDim2.new(1, -24, 0, 66)
-CardsContainer.Position = UDim2.new(0, 12, 0, 54)
-CardsContainer.BackgroundTransparency = 1
+-- Rij 1: 2X / 5X / 10X Multiplier Cards (68px)
+local BoostRow = Instance.new("Frame", MainFrame)
+BoostRow.Size = UDim2.new(1, -20, 0, 68)
+BoostRow.Position = UDim2.new(0, 10, 0, 50)
+BoostRow.BackgroundTransparency = 1
 
-local function createStatCard(xScale, badgeText, accentColor)
-    local Card = Instance.new("Frame", CardsContainer)
+local function createStatCard(parent, xScale, titleText, accentColor, maxNumSize)
+    local Card = Instance.new("Frame", parent)
     Card.Size = UDim2.new(0.318, 0, 1, 0)
     Card.Position = UDim2.new(xScale, 0, 0, 0)
     Card.BackgroundColor3 = CardCyberBg
@@ -676,21 +649,21 @@ local function createStatCard(xScale, badgeText, accentColor)
 
     local CStroke = Instance.new("UIStroke", Card)
     CStroke.Color = accentColor
-    CStroke.Thickness = 1.6
-    CStroke.Transparency = 0.2
+    CStroke.Thickness = 1.5
+    CStroke.Transparency = 0.25
 
     local BadgeLabel = Instance.new("TextLabel", Card)
-    BadgeLabel.Size = UDim2.new(1, 0, 0, 22)
+    BadgeLabel.Size = UDim2.new(1, 0, 0, 20)
     BadgeLabel.Position = UDim2.new(0, 0, 0, 5)
     BadgeLabel.BackgroundTransparency = 1
     BadgeLabel.Font = Enum.Font.GothamBlack
-    BadgeLabel.Text = badgeText
+    BadgeLabel.Text = titleText
     BadgeLabel.TextColor3 = accentColor
-    BadgeLabel.TextSize = 13
+    BadgeLabel.TextSize = 12
 
     local ValueLabel = Instance.new("TextLabel", Card)
-    ValueLabel.Size = UDim2.new(1, -8, 0, 32)
-    ValueLabel.Position = UDim2.new(0, 4, 0, 27)
+    ValueLabel.Size = UDim2.new(1, -8, 1, -28)
+    ValueLabel.Position = UDim2.new(0, 4, 0, 24)
     ValueLabel.BackgroundTransparency = 1
     ValueLabel.Font = Enum.Font.GothamBlack
     ValueLabel.Text = "0"
@@ -698,70 +671,59 @@ local function createStatCard(xScale, badgeText, accentColor)
     ValueLabel.TextScaled = true
 
     local SizeLimit = Instance.new("UITextSizeConstraint", ValueLabel)
-    SizeLimit.MaxTextSize = 24
-    SizeLimit.MinTextSize = 14
+    SizeLimit.MaxTextSize = maxNumSize
+    SizeLimit.MinTextSize = 13
     return ValueLabel
 end
 
-Val2xLabel = createStatCard(0, "2X BOOST", Color3.fromRGB(195, 110, 255))
-Val5xLabel = createStatCard(0.341, "5X BOOST", Color3.fromRGB(255, 160, 45))
-Val10xLabel = createStatCard(0.682, "10X BOOST", NeonGreen)
+Val2xLabel = createStatCard(BoostRow, 0, "2X BOOST", Color3.fromRGB(195, 110, 255), 25)
+Val5xLabel = createStatCard(BoostRow, 0.341, "5X BOOST", Color3.fromRGB(255, 160, 45), 25)
+Val10xLabel = createStatCard(BoostRow, 0.682, "10X BOOST", NeonGreen, 25)
 
-local function createToggleRow(labelText, yPos, defaultState, callback)
-    local Row = Instance.new("Frame", MainFrame)
-    Row.Size = UDim2.new(1, -24, 0, 34)
-    Row.Position = UDim2.new(0, 12, 0, yPos)
-    Row.BackgroundColor3 = CardCyberBg
-    Row.BorderSizePixel = 0
-    Instance.new("UICorner", Row).CornerRadius = UDim.new(0, 8)
+-- Rij 2: Totaal / Beach Gym / Reactie (56px)
+local TelemetryRow = Instance.new("Frame", MainFrame)
+TelemetryRow.Size = UDim2.new(1, -20, 0, 56)
+TelemetryRow.Position = UDim2.new(0, 10, 0, 126)
+TelemetryRow.BackgroundTransparency = 1
 
-    local RowStroke = Instance.new("UIStroke", Row)
-    RowStroke.Color = defaultState and Color3.fromRGB(24, 85, 60) or Color3.fromRGB(30, 48, 40)
-    RowStroke.Thickness = 1.2
+ValTotalLabel = createStatCard(TelemetryRow, 0, "TOTAAL CLAIMS", TextMuted, 20)
+ValGymLabel = createStatCard(TelemetryRow, 0.341, "BEACH GYM", TextMuted, 20)
+ValMsLabel = createStatCard(TelemetryRow, 0.682, "REACTIE", TextMuted, 20)
+ValMsLabel.Text = "0ms"
 
-    local Indicator = Instance.new("Frame", Row)
-    Indicator.Size = UDim2.new(0, 4, 0, 20)
-    Indicator.Position = UDim2.new(0, 0, 0.5, -10)
-    Indicator.BackgroundColor3 = defaultState and NeonGreen or Color3.fromRGB(50, 75, 65)
-    Indicator.BorderSizePixel = 0
+-- Rij 3: Compacte Klikbare Status-Pills (30px)
+local PillsRow = Instance.new("Frame", MainFrame)
+PillsRow.Size = UDim2.new(1, -20, 0, 30)
+PillsRow.Position = UDim2.new(0, 10, 0, 190)
+PillsRow.BackgroundTransparency = 1
 
-    local Label = Instance.new("TextLabel", Row)
-    Label.Size = UDim2.new(1, -72, 1, 0)
-    Label.Position = UDim2.new(0, 12, 0, 0)
-    Label.BackgroundTransparency = 1
-    Label.Font = Enum.Font.GothamBold
-    Label.Text = labelText
-    Label.TextColor3 = TextPure
-    Label.TextSize = 14
-    Label.TextXAlignment = Enum.TextXAlignment.Left
+local function createStatusPill(xScale, labelPrefix, defaultState, callback)
+    local Pill = Instance.new("TextButton", PillsRow)
+    Pill.Size = UDim2.new(0.318, 0, 1, 0)
+    Pill.Position = UDim2.new(xScale, 0, 0, 0)
+    Pill.BackgroundColor3 = defaultState and Color3.fromRGB(14, 120, 74) or Color3.fromRGB(35, 38, 37)
+    Pill.Font = Enum.Font.GothamBlack
+    Pill.Text = labelPrefix .. (defaultState and ": AAN" or ": UIT")
+    Pill.TextColor3 = TextPure
+    Pill.TextSize = 11
+    Instance.new("UICorner", Pill).CornerRadius = UDim.new(0, 7)
 
-    local SwitchBg = Instance.new("TextButton", Row)
-    SwitchBg.Size = UDim2.new(0, 46, 0, 22)
-    SwitchBg.Position = UDim2.new(1, -56, 0.5, -11)
-    SwitchBg.BackgroundColor3 = defaultState and EmeraldGlow or Color3.fromRGB(26, 46, 38)
-    SwitchBg.AutoButtonColor = false
-    SwitchBg.Text = ""
-    Instance.new("UICorner", SwitchBg).CornerRadius = UDim.new(1, 0)
-
-    local Knob = Instance.new("Frame", SwitchBg)
-    Knob.Size = UDim2.new(0, 16, 0, 16)
-    Knob.Position = defaultState and UDim2.new(1, -19, 0.5, -8) or UDim2.new(0, 3, 0.5, -8)
-    Knob.BackgroundColor3 = TextPure
-    Knob.BorderSizePixel = 0
-    Instance.new("UICorner", Knob).CornerRadius = UDim.new(1, 0)
+    local PStroke = Instance.new("UIStroke", Pill)
+    PStroke.Color = defaultState and NeonGreen or Color3.fromRGB(75, 85, 80)
+    PStroke.Thickness = 1.2
 
     local state = defaultState
-    SwitchBg.MouseButton1Click:Connect(function()
+    Pill.MouseButton1Click:Connect(function()
         state = not state
-        TweenService:Create(Knob, TweenInfo.new(0.15), {Position = state and UDim2.new(1, -19, 0.5, -8) or UDim2.new(0, 3, 0.5, -8)}):Play()
-        TweenService:Create(SwitchBg, TweenInfo.new(0.15), {BackgroundColor3 = state and EmeraldGlow or Color3.fromRGB(26, 46, 38)}):Play()
-        TweenService:Create(Indicator, TweenInfo.new(0.15), {BackgroundColor3 = state and NeonGreen or Color3.fromRGB(50, 75, 65)}):Play()
+        Pill.Text = labelPrefix .. (state and ": AAN" or ": UIT")
+        Pill.BackgroundColor3 = state and Color3.fromRGB(14, 120, 74) or Color3.fromRGB(35, 38, 37)
+        PStroke.Color = state and NeonGreen or Color3.fromRGB(75, 85, 80)
         callback(state)
     end)
 end
 
-createToggleRow("Auto Bonus Claimer", 128, autoBonus, function(val) autoBonus = val end)
-createToggleRow("Auto Beach Gym TP", 167, autoBeachGym, function(val)
+createStatusPill(0, "BONUS", autoBonus, function(val) autoBonus = val end)
+createStatusPill(0.341, "GYM TP", autoBeachGym, function(val)
     autoBeachGym = val
     if val then
         local debris = Workspace:FindFirstChild("Debris")
@@ -773,37 +735,11 @@ createToggleRow("Auto Beach Gym TP", 167, autoBeachGym, function(val)
         end
     end
 end)
-createToggleRow("20 FPS Power Lock", 206, fpsCapEnabled, function(val)
-    fpsCapEnabled = val
-    if setfpscap then pcall(setfpscap, val and 20 or 60) end
-end)
-createToggleRow("Anti-AFK + Reconnect", 245, antiAfkEnabled, function(val)
-    antiAfkEnabled = val
-    autoReconnectEnabled = val
-    if val then triggerAfkPulse() end
+createStatusPill(0.682, "VOID", voidActive, function(val)
+    setVoidMode(val)
 end)
 
-local VoidBtn = Instance.new("TextButton", MainFrame)
-VoidBtn.Size = UDim2.new(1, -24, 0, 32)
-VoidBtn.Position = UDim2.new(0, 12, 0, 285)
-VoidBtn.BackgroundColor3 = Color3.fromRGB(14, 145, 88)
-VoidBtn.Font = Enum.Font.GothamBlack
-VoidBtn.Text = "SLOOP WERELD & WOLKEN"
-VoidBtn.TextColor3 = TextPure
-VoidBtn.TextSize = 13
-Instance.new("UICorner", VoidBtn).CornerRadius = UDim.new(0, 8)
-
-local VoidStroke = Instance.new("UIStroke", VoidBtn)
-VoidStroke.Color = NeonGreen
-VoidStroke.Thickness = 1.4
-VoidStroke.Transparency = 0.2
-
-VoidBtn.MouseButton1Click:Connect(function()
-    enableVoidMode()
-    VoidBtn.Text = "ULTRA-VOID ACTIEF"
-    VoidBtn.BackgroundColor3 = Color3.fromRGB(18, 175, 105)
-end)
-
+-- Footer (24px)
 local Footer = Instance.new("Frame", MainFrame)
 Footer.Size = UDim2.new(1, 0, 0, 24)
 Footer.Position = UDim2.new(0, 0, 1, -24)
@@ -817,26 +753,19 @@ FooterTopLine.BackgroundTransparency = 0.5
 FooterTopLine.BorderSizePixel = 0
 
 FooterStatsLabel = Instance.new("TextLabel", Footer)
-FooterStatsLabel.Size = UDim2.new(1, -16, 1, 0)
-FooterStatsLabel.Position = UDim2.new(0, 8, 0, 0)
+FooterStatsLabel.Size = UDim2.new(1, -12, 1, 0)
+FooterStatsLabel.Position = UDim2.new(0, 6, 0, 0)
 FooterStatsLabel.BackgroundTransparency = 1
 FooterStatsLabel.Font = Enum.Font.GothamBold
-FooterStatsLabel.Text = "TOT: 0  |  GYM: 0  |  AFK: 0  |  20 FPS"
+FooterStatsLabel.Text = "AFK PULSEN: 0  |  RECONNECT: AAN  |  20 FPS"
 FooterStatsLabel.TextColor3 = NeonGreen
-FooterStatsLabel.TextSize = 13
-
-MinBtn.MouseButton1Click:Connect(function()
-    isMinimized = not isMinimized
-    MinBtn.Text = isMinimized and "+" or "-"
-    local targetH = isMinimized and minHeight or fullHeight
-    TweenService:Create(MainFrame, TweenInfo.new(0.18), {Size = UDim2.new(0, guiWidth, 0, targetH)}):Play()
-    TweenService:Create(GlowAura, TweenInfo.new(0.18), {Size = UDim2.new(0, guiWidth + 6, 0, targetH + 6)}):Play()
-end)
+FooterStatsLabel.TextSize = 11
 
 CloseBtn.MouseButton1Click:Connect(function()
     autoBonus, autoBeachGym, antiAfkEnabled, autoReconnectEnabled = false, false, false, false
+    setVoidMode(false)
     if setfpscap then pcall(setfpscap, 60) end
-    for _, c in pairs({afkConnection, errorConnection, bonusConn, popCleanerConn, playerCleanerConn, debrisCleanerConn, respawnConn, worldEffectConn, charEffectConn, lightingConn, terrainConn}) do
+    for _, c in pairs({afkConnection, errorConnection, bonusConn, popCleanerConn, playerCleanerConn, debrisCleanerConn, respawnConn, guiCleanerConn, worldEffectConn, charEffectConn, lightingConn, terrainConn}) do
         if c then pcall(function() c:Disconnect() end) end
     end
     for _, c in ipairs(gymWatchConns) do pcall(function() c:Disconnect() end) end
@@ -944,4 +873,9 @@ task.spawn(function()
     end
 end)
 
-triggerAfkPulse()
+-- Start direct in Zero-Render + Pure Stats modus
+task.spawn(function()
+    task.wait(0.8)
+    setVoidMode(true)
+    triggerAfkPulse()
+end)
