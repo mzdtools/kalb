@@ -1,5 +1,5 @@
 -- =====================================================================
--- MzD KALB script - Ultra-Void v3.4 (Total World Wipe + BottomLeft HUD)
+-- MzD KALB script - Ultra-Void v3.5 (Zero VFX + Visible Training)
 -- =====================================================================
 
 if setfpscap then pcall(setfpscap, 20) end
@@ -140,6 +140,7 @@ local function spawnPlatformUnderPlayer(char)
     safePad.Parent = Workspace
 
     local border = Instance.new("SelectionBox")
+    border.Name = "MzD_SafeBorder"
     border.Adornee = safePad
     border.Color3 = Color3.fromRGB(0, 255, 145)
     border.LineThickness = 0.04
@@ -151,35 +152,100 @@ local function spawnPlatformUnderPlayer(char)
 end
 
 -- =====================================================================
--- TOTALE WERELD- & UI-SLOOP (Alleen jij, platform, Gym & BottomLeft HUD)
+-- TOTALE WERELD-, VFX- & UI-SLOOP (Geen spierballen, geen lichaamsgloed)
 -- =====================================================================
-local trackedEffects = setmetatable({}, {__mode = "k"})
+local lockedProps = setmetatable({}, {__mode = "k"})
+local INVISIBLE_SEQ = NumberSequence.new(1)
+local ZERO_SEQ = NumberSequence.new(0)
+
+local function lockProperty(inst, propName, targetValue)
+    local key = tostring(inst) .. "_" .. propName
+    if lockedProps[inst] and lockedProps[inst][propName] then return end
+    lockedProps[inst] = lockedProps[inst] or {}
+    lockedProps[inst][propName] = true
+    inst:GetPropertyChangedSignal(propName):Connect(function()
+        if inst[propName] ~= targetValue then
+            pcall(function() inst[propName] = targetValue end)
+        end
+    end)
+end
+
+local function isGymBillboard(inst)
+    local df = Workspace:FindFirstChild("Debris")
+    local gm = df and df:FindFirstChild("GymMachine")
+    return gm ~= nil and inst:IsDescendantOf(gm)
+end
 
 local function disableVisualNoise(inst)
     if not inst or not inst.Parent then return end
     if inst:IsDescendantOf(CoreGui) then return end
+    if inst.Name == "MzD_SafePlatform" or inst.Name == "MzD_SafeBorder" then return end
+
     pcall(function()
-        if inst:IsA("ParticleEmitter") or inst:IsA("Trail") or inst:IsA("Beam")
-            or inst:IsA("Sparkles") or inst:IsA("Fire") or inst:IsA("Smoke")
-            or inst:IsA("Highlight") or inst:IsA("PointLight")
-            or inst:IsA("SpotLight") or inst:IsA("SurfaceLight") then
+        if inst:IsA("ParticleEmitter") then
             inst.Enabled = false
-            if not trackedEffects[inst] then
-                trackedEffects[inst] = true
-                inst:GetPropertyChangedSignal("Enabled"):Connect(function()
-                    if inst.Enabled then inst.Enabled = false end
-                end)
-            end
+            inst.Rate = 0
+            inst.Transparency = INVISIBLE_SEQ
+            inst.Size = ZERO_SEQ
+            lockProperty(inst, "Enabled", false)
+            lockProperty(inst, "Transparency", INVISIBLE_SEQ)
+        elseif inst:IsA("Trail") or inst:IsA("Beam") then
+            inst.Enabled = false
+            inst.Transparency = INVISIBLE_SEQ
+            lockProperty(inst, "Enabled", false)
+        elseif inst:IsA("Sparkles") or inst:IsA("Fire") or inst:IsA("Smoke") then
+            inst.Enabled = false
+            lockProperty(inst, "Enabled", false)
+        elseif inst:IsA("Highlight") then
+            inst.Enabled = false
+            inst.FillTransparency = 1
+            inst.OutlineTransparency = 1
+            lockProperty(inst, "Enabled", false)
+            lockProperty(inst, "FillTransparency", 1)
+            lockProperty(inst, "OutlineTransparency", 1)
+        elseif inst:IsA("ForceField") then
+            inst.Visible = false
+            lockProperty(inst, "Visible", false)
+        elseif inst:IsA("SelectionBox") or inst:IsA("SelectionSphere") then
+            inst.Visible = false
+            lockProperty(inst, "Visible", false)
+        elseif inst:IsA("PointLight") or inst:IsA("SpotLight") or inst:IsA("SurfaceLight") then
+            inst.Enabled = false
+            inst.Brightness = 0
+            lockProperty(inst, "Enabled", false)
         elseif inst:IsA("BillboardGui") or inst:IsA("SurfaceGui") then
-            local gm = Workspace:FindFirstChild("Debris") and Workspace.Debris:FindFirstChild("GymMachine")
-            if not (gm and inst:IsDescendantOf(gm)) then
+            if not isGymBillboard(inst) then
                 inst.Enabled = false
+                lockProperty(inst, "Enabled", false)
             end
         elseif inst:IsA("Sound") then
             inst.Volume = 0
         elseif inst:IsA("Clouds") then
             inst.Enabled = false
             inst.Cover = 0
+        end
+    end)
+
+    -- Verwijder tijdelijke aura/glow/spierbal onderdelen op je karakter of in Camera
+    pcall(function()
+        local cam = Workspace.CurrentCamera
+        if cam and inst:IsDescendantOf(cam) and inst ~= cam then
+            if inst:IsA("BasePart") or inst:IsA("Model") or inst:IsA("BillboardGui") or inst:IsA("ParticleEmitter") then
+                inst:Destroy()
+                return
+            end
+        end
+
+        local char = player.Character
+        if char and inst:IsDescendantOf(char) and (inst:IsA("BasePart") or inst:IsA("Model")) then
+            local lower = string.lower(inst.Name)
+            if string.find(lower, "aura") or string.find(lower, "glow")
+                or string.find(lower, "vfx") or string.find(lower, "effect")
+                or string.find(lower, "burst") or string.find(lower, "ring")
+                or string.find(lower, "shock") or string.find(lower, "muscle")
+                or string.find(lower, "bicep") or string.find(lower, "flex") then
+                inst:Destroy()
+            end
         end
     end)
 end
@@ -323,8 +389,13 @@ local function obliterateWorldNow()
         end
     end
 
-    if char then
-        for _, desc in ipairs(char:GetDescendants()) do
+    for _, desc in ipairs(Workspace:GetDescendants()) do
+        disableVisualNoise(desc)
+    end
+
+    local bp = player:FindFirstChildOfClass("Backpack")
+    if bp then
+        for _, desc in ipairs(bp:GetDescendants()) do
             disableVisualNoise(desc)
         end
     end
@@ -492,6 +563,9 @@ task.spawn(function()
                     end
                     if not isEquipped then
                         pcall(function() hum:EquipTool(tool) end)
+                        for _, desc in ipairs(tool:GetDescendants()) do
+                            disableVisualNoise(desc)
+                        end
                     else
                         pcall(function() tool:Activate() end)
                     end
@@ -706,6 +780,9 @@ setupBeachGymWatcher()
 
 table.insert(conns, player.CharacterAdded:Connect(function(newChar)
     task.wait(0.2)
+    for _, desc in ipairs(newChar:GetDescendants()) do
+        disableVisualNoise(desc)
+    end
     if activeBeachGym and activeBeachGym:IsDescendantOf(Workspace) and autoBeachGym then
         handledGyms[activeBeachGym] = nil
         teleportToBeachGym(activeBeachGym)
