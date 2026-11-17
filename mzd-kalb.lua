@@ -1,5 +1,5 @@
 -- =====================================================================
--- MzD KALB script - Training script optimized
+-- MzD KALB script - Ultra-Void v3.9 (Zero Memory Leaks + Auto-Start Lift)
 -- =====================================================================
 
 if setfpscap then pcall(setfpscap, 20) end
@@ -21,12 +21,10 @@ local CoreGui = game:GetService("CoreGui")
 local player = Players.LocalPlayer
 local pGui = player:WaitForChild("PlayerGui")
 
--- Houd 3D-rendering altijd aan zodat jij, je platform en Beach Gym zichtbaar zijn
 pcall(function()
     RunService:Set3dRenderingEnabled(true)
 end)
 
--- Synchrone Network lookup zodat equip & lift direct werken
 local sharedFolder = ReplicatedStorage:FindFirstChild("Shared") or ReplicatedStorage:WaitForChild("Shared", 10)
 local packagesFolder = sharedFolder and (sharedFolder:FindFirstChild("Packages") or sharedFolder:WaitForChild("Packages", 10))
 local networkFolder = packagesFolder and (packagesFolder:FindFirstChild("Network") or packagesFolder:WaitForChild("Network", 10))
@@ -35,7 +33,6 @@ local bonusRemote = networkFolder and networkFolder:FindFirstChild("rev_TaviMish
 local weightEquipRemote = networkFolder and networkFolder:FindFirstChild("rev_WeightEquip")
 local vfxRemote = networkFolder and networkFolder:FindFirstChild("rev_VFX_UPD")
 
--- Blokkeer inkomende server-VFX events (lichaamsgloed / spierbal-triggers)
 if vfxRemote and getconnections then
     pcall(function()
         for _, conn in pairs(getconnections(vfxRemote.OnClientEvent)) do
@@ -113,7 +110,7 @@ local function updateDashboard()
 end
 
 -- =====================================================================
--- PROPERTY-LOCK HELPER (Voorkomt dat de game UI of VFX terug aanzet)
+-- MEMORY-SAFE PROPERTY-LOCK (Geen dubbele connections over meerdere uren)
 -- =====================================================================
 local lockedProps = setmetatable({}, {__mode = "k"})
 local INVISIBLE_SEQ = NumberSequence.new(1)
@@ -121,9 +118,13 @@ local ZERO_SEQ = NumberSequence.new(0)
 
 local function lockProperty(inst, propName, targetValue)
     if not inst then return end
-    lockedProps[inst] = lockedProps[inst] or {}
-    if lockedProps[inst][propName] then return end
-    lockedProps[inst][propName] = true
+    local bucket = lockedProps[inst]
+    if not bucket then
+        bucket = {}
+        lockedProps[inst] = bucket
+    end
+    if bucket[propName] then return end
+    bucket[propName] = true
     inst:GetPropertyChangedSignal(propName):Connect(function()
         if inst[propName] ~= targetValue then
             pcall(function() inst[propName] = targetValue end)
@@ -177,7 +178,7 @@ local function spawnPlatformUnderPlayer(char)
 end
 
 -- =====================================================================
--- TOTALE WERELD-, VFX- & UI-SLOOP (Geen spierballen, geen lichaamsgloed)
+-- TOTALE WERELD-, VFX- & UI-SLOOP (Zonder geheugenlekken)
 -- =====================================================================
 local function isGymBillboard(inst)
     local df = Workspace:FindFirstChild("Debris")
@@ -250,11 +251,7 @@ local function disableVisualNoise(inst)
                 if inst.Material == Enum.Material.Neon or inst.Material == Enum.Material.ForceField then
                     inst.Material = Enum.Material.SmoothPlastic
                 end
-                inst:GetPropertyChangedSignal("Material"):Connect(function()
-                    if inst.Material == Enum.Material.Neon or inst.Material == Enum.Material.ForceField then
-                        inst.Material = Enum.Material.SmoothPlastic
-                    end
-                end)
+                lockProperty(inst, "Material", Enum.Material.SmoothPlastic)
             elseif (inst:IsA("BasePart") or inst:IsA("Model")) and not inst:FindFirstAncestorOfClass("Tool") and not inst:FindFirstAncestorOfClass("Accessory") then
                 local lower = string.lower(inst.Name)
                 if string.find(lower, "aura") or string.find(lower, "glow")
@@ -301,11 +298,13 @@ local function filterKickUpgrades(kuGui)
     end
 end
 
+local hookedEffectGuis = setmetatable({}, {__mode = "k"})
 local function lockDisabledScreenGui(gui)
     if not gui or not gui:IsA("LayerCollector") then return end
     gui.Enabled = false
     lockProperty(gui, "Enabled", false)
-    if gui.Name == "GUI_Effects" or gui.Name == "FallGUIEffects" then
+    if (gui.Name == "GUI_Effects" or gui.Name == "FallGUIEffects") and not hookedEffectGuis[gui] then
+        hookedEffectGuis[gui] = true
         pcall(function() gui:ClearAllChildren() end)
         gui.ChildAdded:Connect(function(c)
             pcall(function() c:Destroy() end)
@@ -502,7 +501,7 @@ table.insert(conns, Lighting.ChildAdded:Connect(function(eff)
 end))
 
 -- =====================================================================
--- EXACTE WEIGHT EQUIP & DIRECT STARTEN MET TRAINEN
+-- EXACTE WEIGHT EQUIP & AUTO-LIFT (Lichtgewicht voor 24/7 AFK)
 -- =====================================================================
 local function getBestWeightTool()
     local bestTool = nil
@@ -542,7 +541,7 @@ end
 
 local lastInventoryPull = 0
 local function pullWeightFromWeightUI(ignoreCooldown)
-    if not ignoreCooldown and (tick() - lastInventoryPull < 2.0) then return end
+    if not ignoreCooldown and (tick() - lastInventoryPull < 2.5) then return end
     lastInventoryPull = tick()
 
     local frames = pGui:FindFirstChild("Frames")
@@ -562,10 +561,6 @@ local function pullWeightFromWeightUI(ignoreCooldown)
                     if getconnections then
                         for _, c in pairs(getconnections(eqBtn.MouseButton1Click)) do c:Fire() end
                         for _, c in pairs(getconnections(eqBtn.Activated)) do c:Fire() end
-                    end
-                    if firesignal then
-                        pcall(firesignal, eqBtn.MouseButton1Click)
-                        pcall(firesignal, eqBtn.Activated)
                     end
                 end)
             end
@@ -602,19 +597,9 @@ local function stepAutoLift(doClick, ignorePullCooldown)
             return
         end
 
-        if tick() - lastEquipTick < 0.12 then return end
+        if tick() - lastEquipTick < 0.25 then return end
 
         pcall(function() tool:Activate() end)
-        pcall(function()
-            if getconnections then
-                for _, conn in pairs(getconnections(tool.Activated)) do
-                    conn:Fire()
-                end
-            end
-            if firesignal then
-                pcall(firesignal, tool.Activated)
-            end
-        end)
     end
 
     if doClick then
@@ -634,10 +619,27 @@ local function stepAutoLift(doClick, ignorePullCooldown)
     end
 end
 
+-- Start direct na wereldsloop met een schone wait-sequentie
+local function bootAutoLiftSequence()
+    task.spawn(function()
+        task.wait(0.6) -- Wacht tot wereldsloop & GUI-cleanup volledig klaar zijn
+        if not autoLift then return end
+        local char = player.Character or player.CharacterAdded:Wait()
+        local hum = char:WaitForChild("Humanoid", 10)
+        if not hum or not autoLift then return end
+
+        pcall(function() hum:UnequipTools() end)
+        task.wait(0.35)
+        stepAutoLift(true, true)
+        task.wait(0.35) -- Wacht tot Tool.Equipped van de game klaar is
+        stepAutoLift(true, true)
+    end)
+end
+
 task.spawn(function()
     local clickTick = 0
     while true do
-        task.wait(0.06)
+        task.wait(0.08)
         if not CoreGui:FindFirstChild(uiName) and not (gethui and gethui():FindFirstChild(uiName)) then
             break
         end
@@ -647,7 +649,7 @@ task.spawn(function()
 end)
 
 -- =====================================================================
--- 4-LAAGS ANTI-AFK & AUTO-RECONNECT
+-- 4-LAAGS ANTI-AFK, PERIODIEKE MEMORY CLEANUP & AUTO-RECONNECT
 -- =====================================================================
 local function triggerAfkPulse()
     if not antiAfkEnabled then return end
@@ -679,6 +681,10 @@ task.spawn(function()
         task.wait(180)
         if not CoreGui:FindFirstChild(uiName) and not (gethui and gethui():FindFirstChild(uiName)) then break end
         if setfpscap then pcall(setfpscap, 20) end
+        -- Ruim eventuele losse decals/effects in Terrain of Camera op tegen RAM-opbouw
+        pcall(function()
+            Workspace.Terrain:Clear()
+        end)
         if antiAfkEnabled then
             cycle = cycle + 1
             triggerAfkPulse()
@@ -790,7 +796,6 @@ local function teleportToBeachGym(gymObj)
     removeSafePlatform()
     activeBeachGym = gymObj
 
-    -- Teleporteer en anker 0.25s zodat je karakter niet door het zand zakt
     hrp.Anchored = true
     hrp.CFrame = targetCFrame
     hrp.AssemblyLinearVelocity = Vector3.zero
@@ -862,12 +867,7 @@ table.insert(conns, player.CharacterAdded:Connect(function(newChar)
     else
         spawnPlatformUnderPlayer(newChar)
     end
-    local hum = newChar:FindFirstChildOfClass("Humanoid")
-    if hum and autoLift then
-        pcall(function() hum:UnequipTools() end)
-        task.wait(0.15)
-        stepAutoLift(true, true)
-    end
+    bootAutoLiftSequence()
 end))
 
 -- =====================================================================
@@ -1087,7 +1087,7 @@ end
 createStatusPill(0, "LIFT", autoLift, function(val)
     autoLift = val
     if val then
-        stepAutoLift(true, true)
+        bootAutoLiftSequence()
     else
         local char = player.Character
         local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -1169,7 +1169,7 @@ UserInputService.InputEnded:Connect(function(input)
 end)
 
 -- =====================================================================
--- HYBRID BONUS CLAIMER + POPBONUS VERIFIED COUNTER
+-- HYBRID BONUS CLAIMER + POPBONUS VERIFIED COUNTER (Zonder dubbele hooks)
 -- =====================================================================
 local function clickScreenAtButton(btn)
     pcall(function()
@@ -1200,17 +1200,9 @@ local function activateBonusButton(btn)
     end
 
     pcall(function()
-        if btn and btn.Parent then
-            if getconnections then
-                for _, conn in pairs(getconnections(btn.MouseButton1Click)) do conn:Fire() end
-                for _, conn in pairs(getconnections(btn.Activated)) do conn:Fire() end
-                for _, conn in pairs(getconnections(btn.MouseButton1Down)) do conn:Fire() end
-                for _, conn in pairs(getconnections(btn.MouseButton1Up)) do conn:Fire() end
-            end
-            if firesignal then
-                pcall(firesignal, btn.MouseButton1Click)
-                pcall(firesignal, btn.Activated)
-            end
+        if btn and btn.Parent and getconnections then
+            for _, conn in pairs(getconnections(btn.MouseButton1Click)) do conn:Fire() end
+            for _, conn in pairs(getconnections(btn.Activated)) do conn:Fire() end
         end
     end)
 
@@ -1229,14 +1221,18 @@ local function onPopBonusConfirmed()
     updateDashboard()
 end
 
+local hookedBonusButtons = setmetatable({}, {__mode = "k"})
 local function watchKickUpgradesChild(child)
     if child.Name == "PopBonus" then
         onPopBonusConfirmed()
     elseif child.Name == "Bonus" and child:IsA("GuiButton") then
         if child.Visible then task.spawn(activateBonusButton, child) end
-        child:GetPropertyChangedSignal("Visible"):Connect(function()
-            if child.Visible then task.spawn(activateBonusButton, child) end
-        end)
+        if not hookedBonusButtons[child] then
+            hookedBonusButtons[child] = true
+            child:GetPropertyChangedSignal("Visible"):Connect(function()
+                if child.Visible then task.spawn(activateBonusButton, child) end
+            end)
+        end
     else
         filterKickUpgrades(child.Parent)
     end
@@ -1249,17 +1245,8 @@ if kickUpgrades then
 end
 
 -- =====================================================================
--- DIRECT UITVOEREN BIJ START (Sloop wereld + pak weight + start lift)
+-- DIRECT UITVOEREN BIJ START (Sloop wereld -> Wait -> Auto-Start Lift)
 -- =====================================================================
 obliterateWorldNow()
 triggerAfkPulse()
-
-task.spawn(function()
-    local char = player.Character or player.CharacterAdded:Wait()
-    local hum = char:WaitForChild("Humanoid", 10)
-    if hum and autoLift then
-        pcall(function() hum:UnequipTools() end)
-        task.wait(0.15)
-        stepAutoLift(true, true)
-    end
-end)
+bootAutoLiftSequence()
