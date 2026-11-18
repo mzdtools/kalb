@@ -1,8 +1,11 @@
 -- =====================================================================
--- MzD KALB script - 
+-- MzD KALB script 
 -- =====================================================================
 
 if setfpscap then pcall(setfpscap, 20) end
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -19,6 +22,10 @@ local GuiService = game:GetService("GuiService")
 local CoreGui = game:GetService("CoreGui")
 
 local player = Players.LocalPlayer
+while not player do
+    task.wait()
+    player = Players.LocalPlayer
+end
 local pGui = player:WaitForChild("PlayerGui")
 
 pcall(function()
@@ -75,9 +82,16 @@ for rank, wName in ipairs(WEIGHT_PRIORITY) do
     WEIGHT_LOOKUP[string.lower(wName)] = rank
 end
 
+local VFX_NAME_KEYWORDS = {
+    "aura", "glow", "vfx", "effect", "burst",
+    "ring", "shock", "muscle", "bicep", "flex",
+    "mesh", "part"
+}
+
 -- =====================================================================
 -- Status & Tellers
 -- =====================================================================
+local isAlive = true
 local autoLift = true
 local autoBonus = true
 local autoBeachGym = true
@@ -91,9 +105,12 @@ local lastBonusSpawnTick = 0
 local activeBeachGym = nil
 local activeWeightName = "CHECKEN..."
 local lastSpawnTick = tick()
+local lastEngineInputTick = 0
 
 local conns = {}
 local gymWatchConns = {}
+local activeGymDespawnConn = nil
+local myIdledConn = nil
 
 local Val2xLabel, Val5xLabel, Val10xLabel = nil, nil, nil
 local ValTotalLabel, ValGymLabel, ValMsLabel, FooterStatsLabel = nil, nil, nil, nil
@@ -106,27 +123,45 @@ local function updateDashboard()
     if ValGymLabel then ValGymLabel.Text = tostring(gymTpCount) end
     if ValMsLabel then ValMsLabel.Text = tostring(lastReactionMs) .. "ms" end
     if FooterStatsLabel then
-        FooterStatsLabel.Text = string.format("WEIGHT: %s  |  AFK: %d", string.upper(activeWeightName), afkPulses)
+        local afkState = (lastEngineInputTick > 0 and (tick() - lastEngineInputTick) < 90) and "OK" or "..."
+        FooterStatsLabel.Text = string.format("WEIGHT: %s  |  AFK: %d [%s]", string.upper(activeWeightName), afkPulses, afkState)
     end
 end
 
+local function setActiveWeightLabel(newName)
+    if activeWeightName ~= newName then
+        activeWeightName = newName
+        updateDashboard()
+    end
+end
+
+local function safeDestroy(inst)
+    if not inst or not inst.Parent then return end
+    task.defer(function()
+        if inst and inst.Parent then
+            pcall(inst.Destroy, inst)
+        end
+    end)
+end
+
 -- =====================================================================
--- MEMORY-SAFE PROPERTY-LOCK
+-- MEMORY-SAFE PROPERTY-LOCK (MET CLEANUP BIJ SLUITEN)
 -- =====================================================================
-local lockedProps = setmetatable({}, {__mode = "k"})
+local instanceLockConns = setmetatable({}, {__mode = "k"})
 local INVISIBLE_SEQ = NumberSequence.new(1)
 local ZERO_SEQ = NumberSequence.new(0)
 
 local function lockProperty(inst, propName, targetValue)
-    if not inst then return end
-    local bucket = lockedProps[inst]
+    if not isAlive or not inst then return end
+    local bucket = instanceLockConns[inst]
     if not bucket then
         bucket = {}
-        lockedProps[inst] = bucket
+        instanceLockConns[inst] = bucket
     end
     if bucket[propName] then return end
-    bucket[propName] = true
-    inst:GetPropertyChangedSignal(propName):Connect(function()
+
+    bucket[propName] = inst:GetPropertyChangedSignal(propName):Connect(function()
+        if not isAlive then return end
         if inst[propName] ~= targetValue then
             pcall(function() inst[propName] = targetValue end)
         end
@@ -142,11 +177,12 @@ local function removeSafePlatform()
 end
 
 local function spawnPlatformUnderPlayer(char)
+    if not isAlive then return end
     local targetChar = char or player.Character
     if not targetChar then return end
     local hrp = targetChar:FindFirstChild("HumanoidRootPart") or targetChar:WaitForChild("HumanoidRootPart", 5)
     local hum = targetChar:FindFirstChildOfClass("Humanoid")
-    if not hrp then return end
+    if not hrp or not isAlive then return end
 
     removeSafePlatform()
 
@@ -182,13 +218,22 @@ end
 -- TOTALE WERELD-, VFX- & UI-SLOOP
 -- =====================================================================
 local function isGymBillboard(inst)
-    local df = Workspace:FindFirstChild("Debris")
-    local gm = df and df:FindFirstChild("GymMachine")
-    return gm ~= nil and inst:IsDescendantOf(gm)
+    local gm = inst:FindFirstAncestor("GymMachine")
+    return gm ~= nil and gm.Parent ~= nil and gm.Parent.Name == "Debris"
+end
+
+local function hasVfxKeyword(name)
+    local lower = string.lower(name)
+    for _, kw in ipairs(VFX_NAME_KEYWORDS) do
+        if string.find(lower, kw, 1, true) then
+            return true
+        end
+    end
+    return false
 end
 
 local function disableVisualNoise(inst)
-    if not inst or not inst.Parent then return end
+    if not isAlive or not inst or not inst.Parent then return end
     if inst:IsDescendantOf(CoreGui) then return end
     if inst.Name == "MzD_SafePlatform" or inst.Name == "MzD_SafeBorder" then return end
 
@@ -241,7 +286,7 @@ local function disableVisualNoise(inst)
         local cam = Workspace.CurrentCamera
         if cam and inst:IsDescendantOf(cam) and inst ~= cam then
             if inst:IsA("BasePart") or inst:IsA("Model") or inst:IsA("BillboardGui") or inst:IsA("ParticleEmitter") then
-                inst:Destroy()
+                safeDestroy(inst)
                 return
             end
         end
@@ -253,15 +298,11 @@ local function disableVisualNoise(inst)
                     inst.Material = Enum.Material.SmoothPlastic
                 end
                 lockProperty(inst, "Material", Enum.Material.SmoothPlastic)
-            elseif (inst:IsA("BasePart") or inst:IsA("Model")) and not inst:FindFirstAncestorOfClass("Tool") and not inst:FindFirstAncestorOfClass("Accessory") then
-                local lower = string.lower(inst.Name)
-                if string.find(lower, "aura") or string.find(lower, "glow")
-                    or string.find(lower, "vfx") or string.find(lower, "effect")
-                    or string.find(lower, "burst") or string.find(lower, "ring")
-                    or string.find(lower, "shock") or string.find(lower, "muscle")
-                    or string.find(lower, "bicep") or string.find(lower, "flex")
-                    or string.find(lower, "mesh") or string.find(lower, "part") then
-                    inst:Destroy()
+            elseif (inst:IsA("BasePart") or inst:IsA("Model"))
+                and not inst:FindFirstAncestorOfClass("Tool")
+                and not inst:FindFirstAncestorOfClass("Accessory") then
+                if hasVfxKeyword(inst.Name) then
+                    safeDestroy(inst)
                 end
             end
         end
@@ -269,7 +310,7 @@ local function disableVisualNoise(inst)
 end
 
 local function filterMainHud(hudGui)
-    if not hudGui then return end
+    if not isAlive or not hudGui then return end
     hudGui.Enabled = true
     for _, child in ipairs(hudGui:GetChildren()) do
         if child:IsA("GuiObject") then
@@ -288,8 +329,18 @@ local function filterMainHud(hudGui)
     end
 end
 
+local hookedHuds = setmetatable({}, {__mode = "k"})
+local function hookMainHud(hudGui)
+    filterMainHud(hudGui)
+    if hookedHuds[hudGui] then return end
+    hookedHuds[hudGui] = true
+    table.insert(conns, hudGui.ChildAdded:Connect(function()
+        if isAlive then filterMainHud(hudGui) end
+    end))
+end
+
 local function filterKickUpgrades(kuGui)
-    if not kuGui then return end
+    if not isAlive or not kuGui then return end
     kuGui.Enabled = true
     for _, child in ipairs(kuGui:GetChildren()) do
         if child:IsA("GuiObject") and child.Name ~= "Bonus" and child.Name ~= "PopBonus" then
@@ -301,33 +352,15 @@ end
 
 local hookedEffectGuis = setmetatable({}, {__mode = "k"})
 local function lockDisabledScreenGui(gui)
-    if not gui or not gui:IsA("LayerCollector") then return end
+    if not isAlive or not gui or not gui:IsA("LayerCollector") then return end
     gui.Enabled = false
     lockProperty(gui, "Enabled", false)
     if (gui.Name == "GUI_Effects" or gui.Name == "FallGUIEffects") and not hookedEffectGuis[gui] then
         hookedEffectGuis[gui] = true
         pcall(function() gui:ClearAllChildren() end)
-        gui.ChildAdded:Connect(function(c)
-            pcall(function() c:Destroy() end)
-        end)
-    end
-end
-
-local function stripAllGameGuis()
-    pcall(function()
-        StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.All, false)
-    end)
-
-    for _, gui in ipairs(pGui:GetChildren()) do
-        if gui:IsA("LayerCollector") and gui.Name ~= uiName then
-            if gui.Name == "KickUpgrades" then
-                filterKickUpgrades(gui)
-            elseif gui.Name == "HUD" then
-                filterMainHud(gui)
-            else
-                lockDisabledScreenGui(gui)
-            end
-        end
+        table.insert(conns, gui.ChildAdded:Connect(function(c)
+            if isAlive then safeDestroy(c) end
+        end))
     end
 end
 
@@ -373,139 +406,11 @@ local function setupCleanVoidEnvironment()
     end)
 end
 
-local function obliterateWorldNow()
-    if not activeBeachGym then
-        spawnPlatformUnderPlayer(player.Character)
-    end
-
-    setupCleanVoidEnvironment()
-    stripAllGameGuis()
-
-    local char = player.Character
-    local emptyFolders = {
-        ["Areas"] = true,
-        ["Zones"] = true,
-        ["Machine"] = true,
-        ["KickUpgrades"] = true
-    }
-    local protectedRoots = {
-        ["Camera"] = true,
-        ["Terrain"] = true,
-        ["Players"] = true,
-        ["Debris"] = true,
-        ["MzD_SafePlatform"] = true,
-        [player.Name] = true
-    }
-
-    for _, obj in ipairs(Workspace:GetChildren()) do
-        if emptyFolders[obj.Name] then
-            pcall(function() obj:ClearAllChildren() end)
-        elseif not protectedRoots[obj.Name] and obj ~= char then
-            pcall(function() obj:Destroy() end)
-        end
-    end
-
-    local playersFolder = Workspace:FindFirstChild("Players")
-    if playersFolder then
-        for _, pModel in ipairs(playersFolder:GetChildren()) do
-            if pModel.Name ~= player.Name then
-                pcall(function() pModel:Destroy() end)
-            end
-        end
-    end
-
-    local debrisFolder = Workspace:FindFirstChild("Debris")
-    if debrisFolder then
-        for _, dChild in ipairs(debrisFolder:GetChildren()) do
-            if dChild.Name ~= "GymMachine" then
-                pcall(function() dChild:Destroy() end)
-            else
-                for _, gmChild in ipairs(dChild:GetChildren()) do
-                    if string.lower(gmChild.Name) ~= "beach gym" then
-                        pcall(function() gmChild:Destroy() end)
-                    end
-                end
-            end
-        end
-    end
-
-    for _, desc in ipairs(Workspace:GetDescendants()) do
-        disableVisualNoise(desc)
-    end
-
-    local bp = player:FindFirstChildOfClass("Backpack")
-    if bp then
-        for _, desc in ipairs(bp:GetDescendants()) do
-            disableVisualNoise(desc)
-        end
-    end
-end
-
-table.insert(conns, Workspace.ChildAdded:Connect(function(obj)
-    if not obj then return end
-    local name = obj.Name
-    if name == "MzD_SafePlatform" or name == "Camera" or name == "Terrain"
-        or name == "Players" or name == "Debris" or name == player.Name
-        or obj == player.Character then
-        return
-    end
-    if name == "Areas" or name == "Zones" or name == "Machine" or name == "KickUpgrades" then
-        pcall(function() obj:ClearAllChildren() end)
-        return
-    end
-    pcall(function() obj:Destroy() end)
-end))
-
-table.insert(conns, Workspace.DescendantAdded:Connect(function(desc)
-    if not desc then return end
-    local pf = Workspace:FindFirstChild("Players")
-    if pf and desc.Parent == pf and desc.Name ~= player.Name then
-        pcall(function() desc:Destroy() end)
-        return
-    end
-    local df = Workspace:FindFirstChild("Debris")
-    if df and desc.Parent == df and desc.Name ~= "GymMachine" then
-        pcall(function() desc:Destroy() end)
-        return
-    end
-    local gm = df and df:FindFirstChild("GymMachine")
-    if gm and desc.Parent == gm and string.lower(desc.Name) ~= "beach gym" then
-        pcall(function() desc:Destroy() end)
-        return
-    end
-    disableVisualNoise(desc)
-end))
-
-table.insert(conns, pGui.ChildAdded:Connect(function(gui)
-    if gui and gui:IsA("LayerCollector") and gui.Name ~= uiName then
-        if gui.Name == "KickUpgrades" then
-            filterKickUpgrades(gui)
-        elseif gui.Name == "HUD" then
-            filterMainHud(gui)
-        else
-            lockDisabledScreenGui(gui)
-        end
-    end
-end))
-
-local existingHud = pGui:FindFirstChild("HUD")
-if existingHud then
-    table.insert(conns, existingHud.ChildAdded:Connect(function()
-        filterMainHud(existingHud)
-    end))
-end
-
-table.insert(conns, Lighting.ChildAdded:Connect(function(eff)
-    if eff and eff.Name ~= "MzD_VoidSky" then
-        pcall(function() eff:Destroy() end)
-    end
-end))
-
 -- =====================================================================
 -- CHECK-FIRST EQUIP LOGICA & ANDROID AUTO-LIFT
 -- =====================================================================
 local function getEquippedWeightTool(char)
-    if not char then return nil end
+    if not char then return nil, 999 end
     local bestTool = nil
     local bestRank = 999
     for _, item in ipairs(char:GetChildren()) do
@@ -517,12 +422,12 @@ local function getEquippedWeightTool(char)
             end
         end
     end
-    return bestTool
+    return bestTool, bestRank
 end
 
 local function getBackpackWeightTool()
     local backpack = player:FindFirstChildOfClass("Backpack")
-    if not backpack then return nil end
+    if not backpack then return nil, 999 end
     local bestTool = nil
     local bestRank = 999
     for _, item in ipairs(backpack:GetChildren()) do
@@ -534,7 +439,39 @@ local function getBackpackWeightTool()
             end
         end
     end
-    return bestTool
+    return bestTool, bestRank
+end
+
+local function isWeightEntryUnlocked(entry)
+    local lockObj = entry:FindFirstChild("Lock") or entry:FindFirstChild("Locked")
+    if lockObj and lockObj:IsA("GuiObject") and lockObj.Visible then
+        return false, nil
+    end
+
+    local btns = entry:FindFirstChild("Buttons")
+    if btns then
+        for _, lockBtnName in ipairs({"Buy", "Purchase", "Unlock", "Lock", "Locked"}) do
+            local b = btns:FindFirstChild(lockBtnName)
+            if b and b:IsA("GuiObject") and b.Visible then
+                return false, nil
+            end
+        end
+
+        local equipBtn = btns:FindFirstChild("Equip")
+        if equipBtn and equipBtn:IsA("GuiButton") and equipBtn.Visible then
+            return true, equipBtn
+        end
+
+        local eqBtn = btns:FindFirstChild("Equipped")
+        if eqBtn and eqBtn:IsA("GuiButton") then
+            if eqBtn.Visible then
+                return true, eqBtn
+            end
+            return false, nil
+        end
+    end
+
+    return true, nil
 end
 
 local lastInventoryPull = 0
@@ -546,19 +483,38 @@ local function requestWeightFromGame()
     local weightUI = frames and frames:FindFirstChild("WeightUI")
     local scroller = weightUI and weightUI:FindFirstChild("ScrollingFrame")
 
-    for _, wName in ipairs(WEIGHT_PRIORITY) do
-        local entry = scroller and scroller:FindFirstChild(wName)
-        if entry then
-            if weightEquipRemote then
-                pcall(function() weightEquipRemote:FireServer(wName) end)
-            end
-            local btns = entry:FindFirstChild("Buttons")
-            local eqBtn = btns and btns:FindFirstChild("Equipped")
-            if eqBtn and eqBtn:IsA("GuiButton") then
-                pcall(function()
-                    if getconnections then
-                        for _, c in pairs(getconnections(eqBtn.MouseButton1Click)) do c:Fire() end
+    if scroller then
+        local fallbackName, fallbackBtn = nil, nil
+
+        for _, wName in ipairs(WEIGHT_PRIORITY) do
+            local entry = scroller:FindFirstChild(wName)
+            if entry then
+                local unlocked, btn = isWeightEntryUnlocked(entry)
+                if unlocked then
+                    if weightEquipRemote then
+                        pcall(function() weightEquipRemote:FireServer(wName) end)
                     end
+                    if btn and getconnections then
+                        pcall(function()
+                            for _, c in pairs(getconnections(btn.MouseButton1Click)) do c:Fire() end
+                        end)
+                    end
+                    return
+                elseif not fallbackName then
+                    local btns = entry:FindFirstChild("Buttons")
+                    fallbackName = wName
+                    fallbackBtn = btns and (btns:FindFirstChild("Equip") or btns:FindFirstChild("Equipped"))
+                end
+            end
+        end
+
+        if fallbackName then
+            if weightEquipRemote then
+                pcall(function() weightEquipRemote:FireServer(fallbackName) end)
+            end
+            if fallbackBtn and fallbackBtn:IsA("GuiButton") and getconnections then
+                pcall(function()
+                    for _, c in pairs(getconnections(fallbackBtn.MouseButton1Click)) do c:Fire() end
                 end)
             end
             return
@@ -578,43 +534,31 @@ local function triggerLiftInput(tool)
         local cam = Workspace.CurrentCamera
         if cam then
             local vp = cam.ViewportSize
-            local tx, ty = math.max(10, vp.X - 20), math.max(10, vp.Y - 20)
-            VirtualInputManager:SendTouchEvent(42, 0, tx, ty)
-            VirtualInputManager:SendTouchEvent(42, 2, tx, ty)
+            local tx, ty = math.max(30, vp.X - 35), math.max(120, vp.Y - 35)
+            VirtualInputManager:SendTouchEvent(2, 0, tx, ty)
+            task.delay(0.05, function()
+                if isAlive then
+                    pcall(VirtualInputManager.SendTouchEvent, VirtualInputManager, 2, 2, tx, ty)
+                end
+            end)
         end
     end)
 end
 
 local lastEquipAttempt = 0
 local function stepAutoLift(doTap)
-    if not autoLift then return end
+    if not isAlive or not autoLift then return end
 
     local char = player.Character
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     if not hum or hum.Health <= 0 then return end
 
-    -- STAP 1: Check eerst of je al een barbell ge-equipped hebt (in je hand)
-    local equippedTool = getEquippedWeightTool(char)
-    if equippedTool then
-        if activeWeightName ~= equippedTool.Name then
-            activeWeightName = equippedTool.Name
-            updateDashboard()
-        end
-        if doTap then
-            triggerLiftInput(equippedTool)
-        else
-            pcall(function() equippedTool:Activate() end)
-        end
-        return
-    end
+    local equippedTool, equippedRank = getEquippedWeightTool(char)
+    local backpackTool, backpackRank = getBackpackWeightTool()
 
-    -- STAP 2: Niet ge-equipped -> Check of hij al in je Backpack zit
-    local backpackTool = getBackpackWeightTool()
-    if backpackTool then
-        if activeWeightName ~= backpackTool.Name .. " (EQUIPPING)" then
-            activeWeightName = backpackTool.Name .. " (EQUIPPING)"
-            updateDashboard()
-        end
+    -- STAP 1: Check eerst of je al een sterker gewicht in je Backpack hebt dan in je hand
+    if backpackTool and backpackRank < equippedRank then
+        setActiveWeightLabel(backpackTool.Name .. " (EQUIPPING)")
         if tick() - lastEquipAttempt >= 0.45 then
             lastEquipAttempt = tick()
             pcall(function() hum:EquipTool(backpackTool) end)
@@ -625,130 +569,198 @@ local function stepAutoLift(doTap)
         return
     end
 
-    -- STAP 3: Noch in hand, noch in Backpack (net gespawned) -> Wacht even op server-load en vraag dan op
-    if activeWeightName ~= "WACHT OP BARBELL..." then
-        activeWeightName = "WACHT OP BARBELL..."
-        updateDashboard()
+    -- STAP 2: Check of je al het sterkste beschikbare gewicht vasthebt -> direct liften
+    if equippedTool then
+        setActiveWeightLabel(equippedTool.Name)
+        if doTap then
+            triggerLiftInput(equippedTool)
+        else
+            pcall(function() equippedTool:Activate() end)
+        end
+        return
     end
 
+    -- STAP 3: Noch in hand, noch in Backpack -> Wacht kort op server-load en vraag dan op
+    setActiveWeightLabel("WACHT OP BARBELL...")
     if tick() - lastSpawnTick >= 1.5 then
         requestWeightFromGame()
     end
 end
 
-task.spawn(function()
-    local clickTick = 0
-    while true do
-        task.wait(0.08)
-        if not CoreGui:FindFirstChild(uiName) and not (gethui and gethui():FindFirstChild(uiName)) then
-            break
-        end
-        if autoLift then
-            clickTick = clickTick + 1
-            stepAutoLift(clickTick % 2 == 0)
-        end
-    end
-end)
+-- =====================================================================
+-- BULLETPROOF MULTI-SUBSYSTEM ANTI-AFK (ANDROID / MUMU / DELTA / PC)
+-- =====================================================================
+local triggerAfkPulse
+local isPulsingAfk = false
 
--- =====================================================================
--- 5-LAAGS BULLETPROOF ANDROID / MUMU / DELTA ANTI-AFK & AUTO-RECONNECT
--- =====================================================================
-local function disableAllIdledListeners()
+table.insert(conns, UserInputService.InputBegan:Connect(function()
+    if not isAlive then return end
+    local wasOk = (lastEngineInputTick > 0 and (tick() - lastEngineInputTick) < 90)
+    lastEngineInputTick = tick()
+    if not wasOk then
+        updateDashboard()
+    end
+end))
+
+local function refreshIdledGuard()
+    if myIdledConn then
+        pcall(function() myIdledConn:Disconnect() end)
+        myIdledConn = nil
+    end
+
     pcall(function()
         if getconnections then
             for _, conn in pairs(getconnections(player.Idled)) do
-                if conn.Disable then conn:Disable() end
-                if conn.Disconnect then pcall(function() conn:Disconnect() end) end
+                if conn.Disable then pcall(conn.Disable, conn) end
+                if conn.Disconnect then pcall(conn.Disconnect, conn) end
             end
         end
     end)
-end
 
-local function triggerAfkPulse()
-    if not antiAfkEnabled then return end
-    afkPulses = afkPulses + 1
-    updateDashboard()
-
-    disableAllIdledListeners()
-
-    pcall(function()
-        VirtualUser:CaptureController()
-        VirtualUser:Button2Down(Vector2.new(0, 0), Workspace.CurrentCamera.CFrame)
-        task.wait(0.05)
-        VirtualUser:Button2Up(Vector2.new(0, 0), Workspace.CurrentCamera.CFrame)
-    end)
-
-    task.spawn(function()
-        pcall(function()
-            VirtualInputManager:SendTouchEvent(99, 0, 4, 4)
-            task.wait(0.03)
-            VirtualInputManager:SendTouchEvent(99, 1, 5, 5)
-            task.wait(0.03)
-            VirtualInputManager:SendTouchEvent(99, 2, 5, 5)
-        end)
-    end)
-
-    pcall(function()
-        local cam = Workspace.CurrentCamera
-        if cam then
-            local orig = cam.CFrame
-            cam.CFrame = orig * CFrame.Angles(0, 0.001, 0)
-            task.wait(0.02)
-            cam.CFrame = orig
-        end
-    end)
-
-    task.spawn(function()
-        pcall(function()
-            local char = player.Character
-            local hum = char and char:FindFirstChildOfClass("Humanoid")
-            if hum and hum.Health > 0 then
-                hum:Move(Vector3.new(0.25, 0, 0), false)
-                task.wait(0.07)
-                hum:Move(Vector3.new(-0.25, 0, 0), false)
-                task.wait(0.07)
-                hum:Move(Vector3.zero, false)
-                if hum.FloorMaterial ~= Enum.Material.Air then
-                    hum.Jump = true
-                end
+    if isAlive then
+        myIdledConn = player.Idled:Connect(function()
+            if isAlive and antiAfkEnabled and not isPulsingAfk then
+                triggerAfkPulse()
             end
         end)
-    end)
-end
-
-disableAllIdledListeners()
-table.insert(conns, player.Idled:Connect(function()
-    disableAllIdledListeners()
-    triggerAfkPulse()
-end))
-
-task.spawn(function()
-    while true do
-        task.wait(75)
-        if not CoreGui:FindFirstChild(uiName) and not (gethui and gethui():FindFirstChild(uiName)) then break end
-        if setfpscap then pcall(setfpscap, 20) end
-        pcall(function()
-            Workspace.Terrain:Clear()
-        end)
-        if antiAfkEnabled then
-            triggerAfkPulse()
-        end
     end
-end)
+end
+
+local function getSafeViewportPoint()
+    local cam = Workspace.CurrentCamera
+    local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
+    local inset = GuiService:GetGuiInset()
+    local x = math.max(50, vp.X - 35)
+    local y = math.max(inset.Y + 80, vp.Y - 35)
+    return x, y
+end
+
+triggerAfkPulse = function()
+    if not isAlive or not antiAfkEnabled or isPulsingAfk then return end
+    isPulsingAfk = true
+
+    pcall(function()
+        afkPulses = afkPulses + 1
+        updateDashboard()
+        refreshIdledGuard()
+
+        -- Laag 1: VirtualInputManager Keyboard (F15, 0.12s hold) + Android Touch (finger ID 1, 20px swipe)
+        task.spawn(function()
+            pcall(function()
+                VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F15, false, game)
+                task.wait(0.12)
+                if isAlive then
+                    VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F15, false, game)
+                end
+            end)
+            task.wait(0.08)
+            if not isAlive then return end
+            pcall(function()
+                local tx, ty = getSafeViewportPoint()
+                VirtualInputManager:SendTouchEvent(1, 0, tx, ty)
+                task.wait(0.10)
+                if isAlive then
+                    VirtualInputManager:SendTouchEvent(1, 1, tx - 20, ty)
+                    task.wait(0.10)
+                end
+                if isAlive then
+                    VirtualInputManager:SendTouchEvent(1, 2, tx - 20, ty)
+                end
+            end)
+        end)
+
+        -- Laag 2: VirtualInputManager MouseMove + Right-Click (Button 1, 0.12s hold -> klikt nooit op UI)
+        task.spawn(function()
+            pcall(function()
+                local mx, my = getSafeViewportPoint()
+                VirtualInputManager:SendMouseMoveEvent(mx, my, game)
+                task.wait(0.06)
+                if not isAlive then return end
+                VirtualInputManager:SendMouseMoveEvent(mx - 6, my - 6, game)
+                task.wait(0.06)
+                if not isAlive then return end
+                VirtualInputManager:SendMouseButtonEvent(mx - 6, my - 6, 1, true, game, 0)
+                task.wait(0.12)
+                if isAlive then
+                    VirtualInputManager:SendMouseButtonEvent(mx - 6, my - 6, 1, false, game, 0)
+                end
+            end)
+        end)
+
+        -- Laag 3: VirtualUser (ClickButton2 + 0.40s Button2Down/Up voor >= 8 frames op 20 FPS)
+        task.spawn(function()
+            pcall(function()
+                VirtualUser:CaptureController()
+                VirtualUser:ClickButton2(Vector2.new())
+                local cam = Workspace.CurrentCamera
+                local cf = cam and cam.CFrame or CFrame.new()
+                VirtualUser:Button2Down(Vector2.new(0, 0), cf)
+                task.wait(0.40)
+                if isAlive then
+                    local camNow = Workspace.CurrentCamera
+                    VirtualUser:Button2Up(Vector2.new(0, 0), camNow and camNow.CFrame or cf)
+                end
+            end)
+        end)
+
+        -- Laag 4: Camera micro-pulse & Character anti-freeze
+        task.spawn(function()
+            pcall(function()
+                local cam = Workspace.CurrentCamera
+                if cam then
+                    local orig = cam.CFrame
+                    cam.CFrame = orig * CFrame.Angles(0, 0.001, 0)
+                    task.wait(0.05)
+                    if isAlive and Workspace.CurrentCamera == cam then
+                        cam.CFrame = orig
+                    end
+                end
+            end)
+            pcall(function()
+                local char = player.Character
+                local hum = char and char:FindFirstChildOfClass("Humanoid")
+                if hum and hum.Health > 0 then
+                    hum:Move(Vector3.new(0.25, 0, 0), false)
+                    task.wait(0.08)
+                    hum:Move(Vector3.new(-0.25, 0, 0), false)
+                    task.wait(0.08)
+                    hum:Move(Vector3.zero, false)
+                    if hum.FloorMaterial ~= Enum.Material.Air then
+                        hum.Jump = true
+                    end
+                end
+            end)
+        end)
+    end)
+
+    isPulsingAfk = false
+end
 
 local isReconnecting = false
 local function executeAutoReconnect()
-    if not autoReconnectEnabled or isReconnecting then return end
+    if not isAlive or not autoReconnectEnabled or isReconnecting then return end
     isReconnecting = true
-    task.wait(2)
-    pcall(function()
-        if #Players:GetPlayers() <= 1 then
-            player:Kick("\n[MzD KALB] Auto-Reconnecting...")
-            task.wait(0.5)
-            TeleportService:Teleport(game.PlaceId, player)
-        else
-            TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, player)
+
+    task.spawn(function()
+        task.wait(2)
+        while isAlive and autoReconnectEnabled do
+            local ok = pcall(function()
+                if #Players:GetPlayers() > 1 and game.JobId and game.JobId ~= "" then
+                    TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, player)
+                else
+                    TeleportService:Teleport(game.PlaceId, player)
+                end
+            end)
+
+            if not ok then
+                pcall(function()
+                    TeleportService:Teleport(game.PlaceId, player)
+                end)
+            end
+
+            task.wait(6)
         end
+        isReconnecting = false
     end)
 end
 
@@ -758,10 +770,26 @@ table.insert(conns, GuiService.ErrorMessageChanged:Connect(function(msg)
     end
 end))
 
+if GuiService:GetErrorMessage() ~= "" then
+    executeAutoReconnect()
+end
+
+table.insert(conns, TeleportService.TeleportInitFailed:Connect(function(failedPlayer)
+    if failedPlayer == player and isAlive and autoReconnectEnabled then
+        task.wait(2)
+        pcall(function()
+            TeleportService:Teleport(game.PlaceId, player)
+        end)
+    end
+end))
+
 task.spawn(function()
     local promptGui = CoreGui:FindFirstChild("RobloxPromptGui") or CoreGui:WaitForChild("RobloxPromptGui", 10)
     local overlay = promptGui and promptGui:FindFirstChild("promptOverlay")
-    if overlay then
+    if overlay and isAlive then
+        if overlay:FindFirstChild("ErrorPrompt") then
+            executeAutoReconnect()
+        end
         table.insert(conns, overlay.ChildAdded:Connect(function(child)
             if child.Name == "ErrorPrompt" then
                 executeAutoReconnect()
@@ -773,6 +801,18 @@ end)
 -- =====================================================================
 -- BEACH GYM TELEPORT
 -- =====================================================================
+local function findBeachGym()
+    local debris = Workspace:FindFirstChild("Debris")
+    local gm = debris and debris:FindFirstChild("GymMachine")
+    if not gm then return nil end
+    for _, child in ipairs(gm:GetChildren()) do
+        if string.lower(child.Name) == "beach gym" then
+            return child
+        end
+    end
+    return nil
+end
+
 local function getBeachGymTargetCFrame(gymObj, char)
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
@@ -815,17 +855,31 @@ local function getBeachGymTargetCFrame(gymObj, char)
     return CFrame.new(centerX + 2, standY, centerZ + 2)
 end
 
-local function pulseTouchOnGym(char, gymObj)
-    if not firetouchinterest or not char or not gymObj then return end
+local gymTouchPartsCache = setmetatable({}, {__mode = "k"})
+local function getGymTouchParts(gymObj)
+    local cached = gymTouchPartsCache[gymObj]
+    if cached then return cached end
+
+    local parts = {}
     for _, desc in ipairs(gymObj:GetDescendants()) do
         if desc:IsA("TouchTransmitter") and desc.Parent and desc.Parent:IsA("BasePart") then
-            for _, bodyPart in ipairs(char:GetChildren()) do
-                if bodyPart:IsA("BasePart") then
-                    pcall(firetouchinterest, bodyPart, desc.Parent, 0)
-                    pcall(firetouchinterest, bodyPart, desc.Parent, 1)
-                    pcall(firetouchinterest, bodyPart, desc.Parent, 0)
-                end
-            end
+            table.insert(parts, desc.Parent)
+        end
+    end
+    gymTouchPartsCache[gymObj] = parts
+    return parts
+end
+
+local function pulseTouchOnGym(char, gymObj)
+    if not firetouchinterest or not char or not gymObj or not gymObj.Parent then return end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+
+    for _, touchPart in ipairs(getGymTouchParts(gymObj)) do
+        if touchPart and touchPart.Parent then
+            pcall(firetouchinterest, hrp, touchPart, 0)
+            pcall(firetouchinterest, hrp, touchPart, 1)
+            pcall(firetouchinterest, hrp, touchPart, 0)
         end
     end
 end
@@ -833,12 +887,11 @@ end
 local handledGyms = setmetatable({}, {__mode = "k"})
 
 local function teleportToBeachGym(gymObj)
-    if not autoBeachGym or not gymObj or not gymObj.Parent then return end
+    if not isAlive or not autoBeachGym or not gymObj or not gymObj.Parent then return end
     if handledGyms[gymObj] then return end
-    handledGyms[gymObj] = true
 
     task.wait(0.15)
-    if not gymObj or not gymObj.Parent then return end
+    if not isAlive or not autoBeachGym or not gymObj or not gymObj.Parent then return end
 
     local char = player.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
@@ -848,6 +901,7 @@ local function teleportToBeachGym(gymObj)
     local targetCFrame = getBeachGymTargetCFrame(gymObj, char)
     if not targetCFrame then return end
 
+    handledGyms[gymObj] = true
     removeSafePlatform()
     activeBeachGym = gymObj
 
@@ -868,7 +922,7 @@ local function teleportToBeachGym(gymObj)
             task.wait(0.15)
             hum.Jump = true
         end
-        while activeBeachGym == gymObj and gymObj.Parent and autoBeachGym do
+        while isAlive and activeBeachGym == gymObj and gymObj.Parent and autoBeachGym do
             pulseTouchOnGym(player.Character, gymObj)
             task.wait(2)
         end
@@ -877,12 +931,21 @@ local function teleportToBeachGym(gymObj)
     gymTpCount = gymTpCount + 1
     updateDashboard()
 
-    local despawnConn
-    despawnConn = gymObj.AncestryChanged:Connect(function(_, newParent)
+    if activeGymDespawnConn then
+        pcall(function() activeGymDespawnConn:Disconnect() end)
+        activeGymDespawnConn = nil
+    end
+
+    activeGymDespawnConn = gymObj.AncestryChanged:Connect(function(_, newParent)
         if not newParent or not gymObj:IsDescendantOf(Workspace) then
-            if despawnConn then despawnConn:Disconnect() end
+            if activeGymDespawnConn then
+                pcall(function() activeGymDespawnConn:Disconnect() end)
+                activeGymDespawnConn = nil
+            end
             if activeBeachGym == gymObj then activeBeachGym = nil end
-            spawnPlatformUnderPlayer(player.Character)
+            if isAlive then
+                spawnPlatformUnderPlayer(player.Character)
+            end
         end
     end)
 end
@@ -893,30 +956,39 @@ local function setupBeachGymWatcher()
 
     local function hookGymMachine(gmFolder)
         for _, child in ipairs(gmFolder:GetChildren()) do
-            if string.lower(child.Name) == "beach gym" then task.spawn(teleportToBeachGym, child) end
+            if string.lower(child.Name) == "beach gym" then
+                task.spawn(teleportToBeachGym, child)
+            end
         end
         table.insert(gymWatchConns, gmFolder.ChildAdded:Connect(function(child)
-            if string.lower(child.Name) == "beach gym" then task.spawn(teleportToBeachGym, child) end
+            if isAlive and string.lower(child.Name) == "beach gym" then
+                task.spawn(teleportToBeachGym, child)
+            end
         end))
     end
 
-    local debris = Workspace:WaitForChild("Debris", 15)
-    if debris then
+    local debris = Workspace:FindFirstChild("Debris") or Workspace:WaitForChild("Debris", 15)
+    if debris and isAlive then
         local gm = debris:FindFirstChild("GymMachine")
         if gm then hookGymMachine(gm) end
         table.insert(gymWatchConns, debris.ChildAdded:Connect(function(child)
-            if child.Name == "GymMachine" then hookGymMachine(child) end
+            if isAlive and child.Name == "GymMachine" then
+                hookGymMachine(child)
+            end
         end))
     end
 end
-setupBeachGymWatcher()
+task.spawn(setupBeachGymWatcher)
 
 table.insert(conns, player.CharacterAdded:Connect(function(newChar)
+    if not isAlive then return end
     lastSpawnTick = tick()
     lastEquipAttempt = 0
     lastInventoryPull = 0
     task.wait(0.2)
-    disableAllIdledListeners()
+    if not isAlive then return end
+
+    refreshIdledGuard()
     for _, desc in ipairs(newChar:GetDescendants()) do
         disableVisualNoise(desc)
     end
@@ -1158,9 +1230,7 @@ createStatusPill(0.254, "BONUS", autoBonus, function(val) autoBonus = val end)
 createStatusPill(0.508, "GYM TP", autoBeachGym, function(val)
     autoBeachGym = val
     if val then
-        local debris = Workspace:FindFirstChild("Debris")
-        local gm = debris and debris:FindFirstChild("GymMachine")
-        local bg = gm and gm:FindFirstChild("beach gym")
+        local bg = findBeachGym()
         if bg then
             handledGyms[bg] = nil
             task.spawn(teleportToBeachGym, bg)
@@ -1191,37 +1261,79 @@ FooterStatsLabel.Size = UDim2.new(1, -12, 1, 0)
 FooterStatsLabel.Position = UDim2.new(0, 6, 0, 0)
 FooterStatsLabel.BackgroundTransparency = 1
 FooterStatsLabel.Font = Enum.Font.GothamBold
-FooterStatsLabel.Text = "WEIGHT: CHECKEN...  |  AFK: 0"
+FooterStatsLabel.Text = "WEIGHT: CHECKEN...  |  AFK: 0 [...]"
 FooterStatsLabel.TextColor3 = NeonGreen
 FooterStatsLabel.TextSize = 11
+FooterStatsLabel.TextTruncate = Enum.TextTruncate.AtEnd
 
-CloseBtn.MouseButton1Click:Connect(function()
-    autoLift, autoBonus, autoBeachGym, antiAfkEnabled, autoReconnectEnabled = false, false, false, false, false
-    if setfpscap then pcall(setfpscap, 60) end
-    for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
-    for _, c in ipairs(gymWatchConns) do pcall(function() c:Disconnect() end) end
-    ScreenGui:Destroy()
-end)
+-- Android-veilig draggen (wordt niet onderbroken door Auto-Lift of AFK touch events)
+local dragging = false
+local activeDragInput = nil
+local dragIsMouse = false
+local dragStart, startPos
 
-local dragging, dragInput, dragStart, startPos
 TopBar.InputBegan:Connect(function(input)
+    if dragging then return end
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
         dragging = true
+        activeDragInput = input
+        dragIsMouse = (input.UserInputType == Enum.UserInputType.MouseButton1)
         dragStart = input.Position
         startPos = GlowAura.Position
     end
 end)
-TopBar.InputChanged:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then dragInput = input end
-end)
-UserInputService.InputChanged:Connect(function(input)
-    if input == dragInput and dragging then
+
+table.insert(conns, UserInputService.InputChanged:Connect(function(input)
+    if not dragging then return end
+    if (dragIsMouse and input.UserInputType == Enum.UserInputType.MouseMovement) or (input == activeDragInput) then
         local delta = input.Position - dragStart
-        GlowAura.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        GlowAura.Position = UDim2.new(
+            startPos.X.Scale, startPos.X.Offset + delta.X,
+            startPos.Y.Scale, startPos.Y.Offset + delta.Y
+        )
     end
-end)
-UserInputService.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then dragging = false end
+end))
+
+table.insert(conns, UserInputService.InputEnded:Connect(function(input)
+    if not dragging then return end
+    if input == activeDragInput or (dragIsMouse and input.UserInputType == Enum.UserInputType.MouseButton1) then
+        dragging = false
+        activeDragInput = nil
+        dragIsMouse = false
+    end
+end))
+
+CloseBtn.MouseButton1Click:Connect(function()
+    isAlive = false
+    autoLift, autoBonus, autoBeachGym, antiAfkEnabled, autoReconnectEnabled = false, false, false, false, false
+
+    if setfpscap then pcall(setfpscap, 60) end
+    if myIdledConn then pcall(function() myIdledConn:Disconnect() end) end
+    if activeGymDespawnConn then pcall(function() activeGymDespawnConn:Disconnect() end) end
+
+    for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+    for _, c in ipairs(gymWatchConns) do pcall(function() c:Disconnect() end) end
+
+    for _, bucket in pairs(instanceLockConns) do
+        for _, c in pairs(bucket) do
+            pcall(function() c:Disconnect() end)
+        end
+    end
+    table.clear(instanceLockConns)
+
+    removeSafePlatform()
+
+    pcall(function()
+        StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.All, true)
+    end)
+    pcall(function()
+        local touchGui = pGui:FindFirstChild("TouchGui")
+        if touchGui and touchGui:IsA("LayerCollector") then
+            touchGui.Enabled = true
+        end
+    end)
+
+    ScreenGui:Destroy()
 end)
 
 -- =====================================================================
@@ -1230,16 +1342,23 @@ end)
 local function clickScreenAtButton(btn)
     pcall(function()
         if not btn or not btn.Parent then return end
-        local pos, size, inset = btn.AbsolutePosition, btn.AbsoluteSize, GuiService:GetGuiInset()
-        local cx, cy = pos.X + (size.X * 0.5), pos.Y + (size.Y * 0.5) + inset.Y
+        local pos, size = btn.AbsolutePosition, btn.AbsoluteSize
+        local sc = btn:FindFirstAncestorWhichIsA("ScreenGui")
+        local insetY = (sc and not sc.IgnoreGuiInset) and GuiService:GetGuiInset().Y or 0
+        local cx, cy = pos.X + (size.X * 0.5), pos.Y + (size.Y * 0.5) + insetY
         VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, true, game, 1)
         task.wait(0.01)
         VirtualInputManager:SendMouseButtonEvent(cx, cy, 0, false, game, 1)
     end)
 end
 
+local claimedBonusBtns = setmetatable({}, {__mode = "k"})
 local function activateBonusButton(btn)
-    if not autoBonus or not ScreenGui.Parent or not btn or btn.Name ~= "Bonus" or not btn:IsA("GuiButton") or not btn.Visible then return end
+    if not isAlive or not autoBonus or not ScreenGui.Parent then return end
+    if not btn or btn.Name ~= "Bonus" or not btn:IsA("GuiButton") or not btn.Visible then return end
+    if claimedBonusBtns[btn] and (tick() - claimedBonusBtns[btn]) < 0.35 then return end
+    claimedBonusBtns[btn] = tick()
+
     lastBonusSpawnTick = tick()
 
     local lbl = btn:FindFirstChildOfClass("TextLabel")
@@ -1247,62 +1366,258 @@ local function activateBonusButton(btn)
         lastSeenMultiplier = string.lower(lbl.Text)
     else
         local cConn = btn.ChildAdded:Connect(function(c)
-            if c:IsA("TextLabel") and c.Text ~= "" then lastSeenMultiplier = string.lower(c.Text) end
+            if c:IsA("TextLabel") and c.Text ~= "" then
+                lastSeenMultiplier = string.lower(c.Text)
+            end
         end)
         task.wait(0.015)
         cConn:Disconnect()
         lbl = btn and btn:FindFirstChildOfClass("TextLabel")
-        if lbl and lbl.Text ~= "" then lastSeenMultiplier = string.lower(lbl.Text) end
+        if lbl and lbl.Text ~= "" then
+            lastSeenMultiplier = string.lower(lbl.Text)
+        end
     end
 
+    if not isAlive or not autoBonus or not btn or not btn.Parent or not btn.Visible then return end
+
     pcall(function()
-        if btn and btn.Parent and getconnections then
+        if getconnections then
             for _, conn in pairs(getconnections(btn.MouseButton1Click)) do conn:Fire() end
             for _, conn in pairs(getconnections(btn.Activated)) do conn:Fire() end
         end
     end)
 
     if btn and btn.Parent and btn.Visible then clickScreenAtButton(btn) end
-    if bonusRemote then pcall(function() bonusRemote:FireServer() end) end
+    if bonusRemote and btn and btn.Parent and btn.Visible then
+        pcall(function() bonusRemote:FireServer() end)
+    end
 end
 
 local function onPopBonusConfirmed()
     local now = tick()
-    if string.find(lastSeenMultiplier, "10") then count10x = count10x + 1
-    elseif string.find(lastSeenMultiplier, "5") then count5x = count5x + 1
-    else count2x = count2x + 1 end
+    if string.find(lastSeenMultiplier, "10", 1, true) then
+        count10x = count10x + 1
+    elseif string.find(lastSeenMultiplier, "5", 1, true) then
+        count5x = count5x + 1
+    else
+        count2x = count2x + 1
+    end
 
     totalBonusCount = totalBonusCount + 1
-    if lastBonusSpawnTick > 0 then lastReactionMs = math.floor((now - lastBonusSpawnTick) * 1000) end
+    if lastBonusSpawnTick > 0 then
+        lastReactionMs = math.floor((now - lastBonusSpawnTick) * 1000)
+    end
     updateDashboard()
 end
 
 local hookedBonusButtons = setmetatable({}, {__mode = "k"})
 local function watchKickUpgradesChild(child)
+    if not isAlive then return end
     if child.Name == "PopBonus" then
         onPopBonusConfirmed()
     elseif child.Name == "Bonus" and child:IsA("GuiButton") then
         if child.Visible then task.spawn(activateBonusButton, child) end
         if not hookedBonusButtons[child] then
             hookedBonusButtons[child] = true
-            child:GetPropertyChangedSignal("Visible"):Connect(function()
-                if child.Visible then task.spawn(activateBonusButton, child) end
-            end)
+            table.insert(conns, child:GetPropertyChangedSignal("Visible"):Connect(function()
+                if isAlive and child.Visible then
+                    task.spawn(activateBonusButton, child)
+                end
+            end))
         end
     else
         filterKickUpgrades(child.Parent)
     end
 end
 
-local kickUpgrades = pGui:FindFirstChild("KickUpgrades")
-if kickUpgrades then
-    for _, child in ipairs(kickUpgrades:GetChildren()) do watchKickUpgradesChild(child) end
-    table.insert(conns, kickUpgrades.ChildAdded:Connect(watchKickUpgradesChild))
+local hookedKickUpgrades = setmetatable({}, {__mode = "k"})
+local function hookKickUpgrades(kuGui)
+    filterKickUpgrades(kuGui)
+    if hookedKickUpgrades[kuGui] then return end
+    hookedKickUpgrades[kuGui] = true
+    for _, child in ipairs(kuGui:GetChildren()) do
+        watchKickUpgradesChild(child)
+    end
+    table.insert(conns, kuGui.ChildAdded:Connect(watchKickUpgradesChild))
 end
 
 -- =====================================================================
--- DIRECT UITVOEREN BIJ START
+-- WORLD, GUI & LIGHTING WATCHERS + OBLITERATE
 -- =====================================================================
+local function stripAllGameGuis()
+    pcall(function()
+        StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.All, false)
+    end)
+
+    for _, gui in ipairs(pGui:GetChildren()) do
+        if gui:IsA("LayerCollector") and gui.Name ~= uiName then
+            if gui.Name == "KickUpgrades" then
+                hookKickUpgrades(gui)
+            elseif gui.Name == "HUD" then
+                hookMainHud(gui)
+            else
+                lockDisabledScreenGui(gui)
+            end
+        end
+    end
+end
+
+local function obliterateWorldNow()
+    if not activeBeachGym then
+        spawnPlatformUnderPlayer(player.Character)
+    end
+
+    setupCleanVoidEnvironment()
+    stripAllGameGuis()
+
+    local char = player.Character
+    local emptyFolders = {
+        ["Areas"] = true,
+        ["Zones"] = true,
+        ["Machine"] = true,
+        ["KickUpgrades"] = true
+    }
+    local protectedRoots = {
+        ["Camera"] = true,
+        ["Terrain"] = true,
+        ["Players"] = true,
+        ["Debris"] = true,
+        ["MzD_SafePlatform"] = true,
+        [player.Name] = true
+    }
+
+    for _, obj in ipairs(Workspace:GetChildren()) do
+        if emptyFolders[obj.Name] then
+            pcall(function() obj:ClearAllChildren() end)
+        elseif not protectedRoots[obj.Name] and obj ~= char then
+            pcall(function() obj:Destroy() end)
+        end
+    end
+
+    local playersFolder = Workspace:FindFirstChild("Players")
+    if playersFolder then
+        for _, pModel in ipairs(playersFolder:GetChildren()) do
+            if pModel.Name ~= player.Name then
+                pcall(function() pModel:Destroy() end)
+            end
+        end
+    end
+
+    local debrisFolder = Workspace:FindFirstChild("Debris")
+    if debrisFolder then
+        for _, dChild in ipairs(debrisFolder:GetChildren()) do
+            if dChild.Name ~= "GymMachine" then
+                pcall(function() dChild:Destroy() end)
+            else
+                for _, gmChild in ipairs(dChild:GetChildren()) do
+                    if string.lower(gmChild.Name) ~= "beach gym" then
+                        pcall(function() gmChild:Destroy() end)
+                    end
+                end
+            end
+        end
+    end
+
+    for _, desc in ipairs(Workspace:GetDescendants()) do
+        disableVisualNoise(desc)
+    end
+
+    local bp = player:FindFirstChildOfClass("Backpack")
+    if bp then
+        for _, desc in ipairs(bp:GetDescendants()) do
+            disableVisualNoise(desc)
+        end
+    end
+end
+
+table.insert(conns, Workspace.ChildAdded:Connect(function(obj)
+    if not isAlive or not obj then return end
+    local name = obj.Name
+    if name == "MzD_SafePlatform" or name == "Camera" or name == "Terrain"
+        or name == "Players" or name == "Debris" or name == player.Name
+        or obj == player.Character then
+        return
+    end
+    if name == "Areas" or name == "Zones" or name == "Machine" or name == "KickUpgrades" then
+        pcall(function() obj:ClearAllChildren() end)
+        return
+    end
+    safeDestroy(obj)
+end))
+
+table.insert(conns, Workspace.DescendantAdded:Connect(function(desc)
+    if not isAlive or not desc then return end
+    local parent = desc.Parent
+    if parent then
+        local pName = parent.Name
+        if parent.Parent == Workspace then
+            if pName == "Areas" or pName == "Zones" or pName == "Machine" or pName == "KickUpgrades" then
+                safeDestroy(desc)
+                return
+            elseif pName == "Players" and desc.Name ~= player.Name then
+                safeDestroy(desc)
+                return
+            elseif pName == "Debris" and desc.Name ~= "GymMachine" then
+                safeDestroy(desc)
+                return
+            end
+        elseif pName == "GymMachine" and parent.Parent and parent.Parent.Name == "Debris" then
+            if string.lower(desc.Name) ~= "beach gym" then
+                safeDestroy(desc)
+                return
+            end
+        end
+    end
+    disableVisualNoise(desc)
+end))
+
+table.insert(conns, pGui.ChildAdded:Connect(function(gui)
+    if not isAlive or not gui then return end
+    if gui:IsA("LayerCollector") and gui.Name ~= uiName then
+        if gui.Name == "KickUpgrades" then
+            hookKickUpgrades(gui)
+        elseif gui.Name == "HUD" then
+            hookMainHud(gui)
+        else
+            lockDisabledScreenGui(gui)
+        end
+    end
+end))
+
+table.insert(conns, Lighting.ChildAdded:Connect(function(eff)
+    if isAlive and eff and eff.Name ~= "MzD_VoidSky" then
+        safeDestroy(eff)
+    end
+end))
+
+-- =====================================================================
+-- BACKGROUND LOOPS & DIRECT STARTEN
+-- =====================================================================
+task.spawn(function()
+    local clickTick = 0
+    while isAlive and ScreenGui.Parent do
+        task.wait(0.08)
+        if not isAlive or not ScreenGui.Parent then break end
+        if autoLift then
+            clickTick = clickTick + 1
+            stepAutoLift(clickTick % 2 == 0)
+        end
+    end
+end)
+
+task.spawn(function()
+    while isAlive and ScreenGui.Parent do
+        task.wait(45)
+        if not isAlive or not ScreenGui.Parent then break end
+        if setfpscap then pcall(setfpscap, 20) end
+        pcall(function() Workspace.Terrain:Clear() end)
+        if antiAfkEnabled then
+            triggerAfkPulse()
+        end
+    end
+end)
+
 obliterateWorldNow()
+refreshIdledGuard()
 triggerAfkPulse()
 stepAutoLift(true)
