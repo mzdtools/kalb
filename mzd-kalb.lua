@@ -1,5 +1,5 @@
 -- =====================================================================
--- MzD KALB script - Ultra-Void v3.9 (Zero Memory Leaks + Auto-Start Lift)
+-- MzD KALB script - 
 -- =====================================================================
 
 if setfpscap then pcall(setfpscap, 20) end
@@ -110,7 +110,7 @@ local function updateDashboard()
 end
 
 -- =====================================================================
--- MEMORY-SAFE PROPERTY-LOCK (Geen dubbele connections over meerdere uren)
+-- MEMORY-SAFE PROPERTY-LOCK
 -- =====================================================================
 local lockedProps = setmetatable({}, {__mode = "k"})
 local INVISIBLE_SEQ = NumberSequence.new(1)
@@ -133,7 +133,7 @@ local function lockProperty(inst, propName, targetValue)
 end
 
 -- =====================================================================
--- TRAININGSPLATFORM BEHEER (Altijd grond onder je voeten)
+-- TRAININGSPLATFORM BEHEER
 -- =====================================================================
 local function removeSafePlatform()
     local existingPad = Workspace:FindFirstChild("MzD_SafePlatform")
@@ -178,7 +178,7 @@ local function spawnPlatformUnderPlayer(char)
 end
 
 -- =====================================================================
--- TOTALE WERELD-, VFX- & UI-SLOOP (Zonder geheugenlekken)
+-- TOTALE WERELD-, VFX- & UI-SLOOP
 -- =====================================================================
 local function isGymBillboard(inst)
     local df = Workspace:FindFirstChild("Debris")
@@ -501,7 +501,7 @@ table.insert(conns, Lighting.ChildAdded:Connect(function(eff)
 end))
 
 -- =====================================================================
--- EXACTE WEIGHT EQUIP & AUTO-LIFT (Lichtgewicht voor 24/7 AFK)
+-- EXACTE WEIGHT EQUIP & AUTO-LIFT
 -- =====================================================================
 local function getBestWeightTool()
     local bestTool = nil
@@ -560,7 +560,6 @@ local function pullWeightFromWeightUI(ignoreCooldown)
                 pcall(function()
                     if getconnections then
                         for _, c in pairs(getconnections(eqBtn.MouseButton1Click)) do c:Fire() end
-                        for _, c in pairs(getconnections(eqBtn.Activated)) do c:Fire() end
                     end
                 end)
             end
@@ -570,9 +569,11 @@ local function pullWeightFromWeightUI(ignoreCooldown)
     end
 end
 
+local liftReady = false
 local lastEquipTick = 0
+
 local function stepAutoLift(doClick, ignorePullCooldown)
-    if not autoLift then return end
+    if not autoLift or not liftReady then return end
     local char = player.Character
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     if not hum or hum.Health <= 0 then return end
@@ -597,7 +598,7 @@ local function stepAutoLift(doClick, ignorePullCooldown)
             return
         end
 
-        if tick() - lastEquipTick < 0.25 then return end
+        if tick() - lastEquipTick < 0.35 then return end
 
         pcall(function() tool:Activate() end)
     end
@@ -607,33 +608,7 @@ local function stepAutoLift(doClick, ignorePullCooldown)
             VirtualUser:CaptureController()
             VirtualUser:ClickButton1(Vector2.new(0, 0))
         end)
-        pcall(function()
-            local cam = Workspace.CurrentCamera
-            if cam then
-                local vp = cam.ViewportSize
-                local tx, ty = vp.X * 0.5, vp.Y * 0.78
-                VirtualInputManager:SendMouseButtonEvent(tx, ty, 0, true, game, 1)
-                VirtualInputManager:SendMouseButtonEvent(tx, ty, 0, false, game, 1)
-            end
-        end)
     end
-end
-
--- Start direct na wereldsloop met een schone wait-sequentie
-local function bootAutoLiftSequence()
-    task.spawn(function()
-        task.wait(0.6) -- Wacht tot wereldsloop & GUI-cleanup volledig klaar zijn
-        if not autoLift then return end
-        local char = player.Character or player.CharacterAdded:Wait()
-        local hum = char:WaitForChild("Humanoid", 10)
-        if not hum or not autoLift then return end
-
-        pcall(function() hum:UnequipTools() end)
-        task.wait(0.35)
-        stepAutoLift(true, true)
-        task.wait(0.35) -- Wacht tot Tool.Equipped van de game klaar is
-        stepAutoLift(true, true)
-    end)
 end
 
 task.spawn(function()
@@ -643,80 +618,142 @@ task.spawn(function()
         if not CoreGui:FindFirstChild(uiName) and not (gethui and gethui():FindFirstChild(uiName)) then
             break
         end
-        clickTick = clickTick + 1
-        stepAutoLift(clickTick % 2 == 0, false)
+        if liftReady and autoLift then
+            clickTick = clickTick + 1
+            stepAutoLift(clickTick % 2 == 0, false)
+        end
     end
 end)
 
 -- =====================================================================
--- 4-LAAGS ANTI-AFK, PERIODIEKE MEMORY CLEANUP & AUTO-RECONNECT
+-- 5-LAAGS BULLETPROOF ANDROID / MUMU / DELTA ANTI-AFK & AUTO-RECONNECT
 -- =====================================================================
+local function disableAllIdledListeners()
+    pcall(function()
+        if getconnections then
+            for _, conn in pairs(getconnections(player.Idled)) do
+                if conn.Disable then conn:Disable() end
+                if conn.Disconnect then pcall(function() conn:Disconnect() end) end
+            end
+        end
+    end)
+end
+
 local function triggerAfkPulse()
     if not antiAfkEnabled then return end
     afkPulses = afkPulses + 1
     updateDashboard()
+
+    -- Laag 1: Schakel eventueel opnieuw gekoppelde Idled-listeners direct weer uit
+    disableAllIdledListeners()
+
+    -- Laag 2: VirtualUser controller input
     pcall(function()
         VirtualUser:CaptureController()
-        VirtualUser:ClickButton2(Vector2.new(0, 0))
-    end)
-    pcall(function()
-        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.RightControl, false, game)
+        VirtualUser:Button2Down(Vector2.new(0, 0), Workspace.CurrentCamera.CFrame)
         task.wait(0.05)
-        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.RightControl, false, game)
+        VirtualUser:Button2Up(Vector2.new(0, 0), Workspace.CurrentCamera.CFrame)
+    end)
+
+    -- Laag 3: Echte Android Touch-injectie op dode hoek (4, 4) om mobiele idle-timer te resetten
+    task.spawn(function()
+        pcall(function()
+            VirtualInputManager:SendTouchEvent(99, 0, 4, 4)
+            task.wait(0.03)
+            VirtualInputManager:SendTouchEvent(99, 1, 5, 5)
+            task.wait(0.03)
+            VirtualInputManager:SendTouchEvent(99, 2, 5, 5)
+        end)
+    end)
+
+    -- Laag 4: Camera CFrame micro-nudge
+    pcall(function()
+        local cam = Workspace.CurrentCamera
+        if cam then
+            local orig = cam.CFrame
+            cam.CFrame = orig * CFrame.Angles(0, 0.001, 0)
+            task.wait(0.02)
+            cam.CFrame = orig
+        end
+    end)
+
+    -- Laag 5: Server-gerepliceerde micro-stap heen en terug + sprong
+    task.spawn(function()
+        pcall(function()
+            local char = player.Character
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            if hum and hum.Health > 0 then
+                hum:Move(Vector3.new(0.25, 0, 0), false)
+                task.wait(0.07)
+                hum:Move(Vector3.new(-0.25, 0, 0), false)
+                task.wait(0.07)
+                hum:Move(Vector3.zero, false)
+                if hum.FloorMaterial ~= Enum.Material.Air then
+                    hum.Jump = true
+                end
+            end
+        end)
     end)
 end
 
-pcall(function()
-    if getconnections then
-        for _, conn in pairs(getconnections(player.Idled)) do
-            if conn.Disable then conn:Disable() end
-        end
-    end
-end)
-table.insert(conns, player.Idled:Connect(triggerAfkPulse))
+disableAllIdledListeners()
+table.insert(conns, player.Idled:Connect(function()
+    disableAllIdledListeners()
+    triggerAfkPulse()
+end))
 
+-- Elke 75 seconden (16x binnen 20 min) een volledige mobiele Anti-AFK puls + RAM cleanup
 task.spawn(function()
-    local cycle = 0
     while true do
-        task.wait(180)
+        task.wait(75)
         if not CoreGui:FindFirstChild(uiName) and not (gethui and gethui():FindFirstChild(uiName)) then break end
         if setfpscap then pcall(setfpscap, 20) end
-        -- Ruim eventuele losse decals/effects in Terrain of Camera op tegen RAM-opbouw
         pcall(function()
             Workspace.Terrain:Clear()
         end)
         if antiAfkEnabled then
-            cycle = cycle + 1
             triggerAfkPulse()
-            if cycle % 2 == 0 then
-                pcall(function()
-                    local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-                    if hum and hum.FloorMaterial ~= Enum.Material.Air then hum.Jump = true end
-                end)
-            end
         end
     end
 end)
 
+-- Auto-Reconnect voor zowel Desktop ErrorMessage als Android RobloxPromptGui
 local isReconnecting = false
+local function executeAutoReconnect()
+    if not autoReconnectEnabled or isReconnecting then return end
+    isReconnecting = true
+    task.wait(2)
+    pcall(function()
+        if #Players:GetPlayers() <= 1 then
+            player:Kick("\n[MzD KALB] Auto-Reconnecting...")
+            task.wait(0.5)
+            TeleportService:Teleport(game.PlaceId, player)
+        else
+            TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, player)
+        end
+    end)
+end
+
 table.insert(conns, GuiService.ErrorMessageChanged:Connect(function(msg)
-    if msg and msg ~= "" and autoReconnectEnabled and not isReconnecting then
-        isReconnecting = true
-        task.wait(2)
-        pcall(function()
-            if #Players:GetPlayers() <= 1 then
-                player:Kick("\n[MzD KALB] Auto-Reconnecting...")
-                task.wait(0.5)
-                TeleportService:Teleport(game.PlaceId, player)
-            else
-                TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, player)
-            end
-        end)
+    if msg and msg ~= "" then
+        executeAutoReconnect()
     end
 end))
 
+task.spawn(function()
+    local promptGui = CoreGui:FindFirstChild("RobloxPromptGui") or CoreGui:WaitForChild("RobloxPromptGui", 10)
+    local overlay = promptGui and promptGui:FindFirstChild("promptOverlay")
+    if overlay then
+        table.insert(conns, overlay.ChildAdded:Connect(function(child)
+            if child.Name == "ErrorPrompt" then
+                executeAutoReconnect()
+            end
+        end))
+    end
+end)
+
 -- =====================================================================
--- BEACH GYM TELEPORT (Zandplateau + Gele Hitbox Zone + Anchored Stabilisatie)
+-- BEACH GYM TELEPORT
 -- =====================================================================
 local function getBeachGymTargetCFrame(gymObj, char)
     local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -857,7 +894,8 @@ end
 setupBeachGymWatcher()
 
 table.insert(conns, player.CharacterAdded:Connect(function(newChar)
-    task.wait(0.15)
+    task.wait(0.2)
+    disableAllIdledListeners()
     for _, desc in ipairs(newChar:GetDescendants()) do
         disableVisualNoise(desc)
     end
@@ -867,7 +905,9 @@ table.insert(conns, player.CharacterAdded:Connect(function(newChar)
     else
         spawnPlatformUnderPlayer(newChar)
     end
-    bootAutoLiftSequence()
+    task.wait(0.5)
+    lastEquipTick = 0
+    stepAutoLift(true, true)
 end))
 
 -- =====================================================================
@@ -1060,8 +1100,7 @@ local function createStatusPill(xScale, labelPrefix, defaultState, callback)
     Pill.Text = labelPrefix .. (defaultState and "\nAAN" or "\nUIT")
     Pill.TextColor3 = TextPure
     Pill.TextSize = 10
-    Pill.Active = true
-    Pill.AutoButtonColor = true
+    Pill.AutoButtonColor = false
     Instance.new("UICorner", Pill).CornerRadius = UDim.new(0, 7)
 
     local PStroke = Instance.new("UIStroke", Pill)
@@ -1070,24 +1109,23 @@ local function createStatusPill(xScale, labelPrefix, defaultState, callback)
 
     local state = defaultState
     local lastToggle = 0
-    local function toggleState()
-        if tick() - lastToggle < 0.15 then return end
+    Pill.MouseButton1Click:Connect(function()
+        if tick() - lastToggle < 0.35 then return end
         lastToggle = tick()
         state = not state
         Pill.Text = labelPrefix .. (state and "\nAAN" or "\nUIT")
         Pill.BackgroundColor3 = state and Color3.fromRGB(14, 120, 74) or Color3.fromRGB(35, 38, 37)
         PStroke.Color = state and NeonGreen or Color3.fromRGB(75, 85, 80)
         callback(state)
-    end
-
-    Pill.Activated:Connect(toggleState)
-    Pill.MouseButton1Click:Connect(toggleState)
+    end)
 end
 
 createStatusPill(0, "LIFT", autoLift, function(val)
     autoLift = val
     if val then
-        bootAutoLiftSequence()
+        liftReady = true
+        lastEquipTick = 0
+        stepAutoLift(true, true)
     else
         local char = player.Character
         local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -1169,7 +1207,7 @@ UserInputService.InputEnded:Connect(function(input)
 end)
 
 -- =====================================================================
--- HYBRID BONUS CLAIMER + POPBONUS VERIFIED COUNTER (Zonder dubbele hooks)
+-- HYBRID BONUS CLAIMER + POPBONUS VERIFIED COUNTER
 -- =====================================================================
 local function clickScreenAtButton(btn)
     pcall(function()
@@ -1245,8 +1283,16 @@ if kickUpgrades then
 end
 
 -- =====================================================================
--- DIRECT UITVOEREN BIJ START (Sloop wereld -> Wait -> Auto-Start Lift)
+-- DIRECT UITVOEREN BIJ START
 -- =====================================================================
 obliterateWorldNow()
 triggerAfkPulse()
-bootAutoLiftSequence()
+
+task.spawn(function()
+    task.wait(1.0)
+    liftReady = true
+    lastEquipTick = 0
+    stepAutoLift(true, true)
+    task.wait(0.4)
+    stepAutoLift(true, true)
+end)
