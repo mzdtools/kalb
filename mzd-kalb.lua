@@ -89,7 +89,8 @@ local gymTpCount, lastReactionMs, afkPulses = 0, 0, 0
 local lastSeenMultiplier = "x2"
 local lastBonusSpawnTick = 0
 local activeBeachGym = nil
-local activeWeightName = "ZOEKEN..."
+local activeWeightName = "CHECKEN..."
+local lastSpawnTick = tick()
 
 local conns = {}
 local gymWatchConns = {}
@@ -501,47 +502,44 @@ table.insert(conns, Lighting.ChildAdded:Connect(function(eff)
 end))
 
 -- =====================================================================
--- EXACTE WEIGHT EQUIP & AUTO-LIFT
+-- CHECK-FIRST EQUIP LOGICA & ANDROID AUTO-LIFT
 -- =====================================================================
-local function getBestWeightTool()
+local function getEquippedWeightTool(char)
+    if not char then return nil end
     local bestTool = nil
     local bestRank = 999
-    local isEquipped = false
-
-    local char = player.Character
-    if char then
-        for _, item in ipairs(char:GetChildren()) do
-            if item:IsA("Tool") then
-                local rank = WEIGHT_LOOKUP[string.lower(item.Name)]
-                if rank and rank < bestRank then
-                    bestRank = rank
-                    bestTool = item
-                    isEquipped = true
-                end
+    for _, item in ipairs(char:GetChildren()) do
+        if item:IsA("Tool") then
+            local rank = WEIGHT_LOOKUP[string.lower(item.Name)]
+            if rank and rank < bestRank then
+                bestRank = rank
+                bestTool = item
             end
         end
     end
+    return bestTool
+end
 
+local function getBackpackWeightTool()
     local backpack = player:FindFirstChildOfClass("Backpack")
-    if backpack then
-        for _, item in ipairs(backpack:GetChildren()) do
-            if item:IsA("Tool") then
-                local rank = WEIGHT_LOOKUP[string.lower(item.Name)]
-                if rank and rank < bestRank then
-                    bestRank = rank
-                    bestTool = item
-                    isEquipped = false
-                end
+    if not backpack then return nil end
+    local bestTool = nil
+    local bestRank = 999
+    for _, item in ipairs(backpack:GetChildren()) do
+        if item:IsA("Tool") then
+            local rank = WEIGHT_LOOKUP[string.lower(item.Name)]
+            if rank and rank < bestRank then
+                bestRank = rank
+                bestTool = item
             end
         end
     end
-
-    return bestTool, isEquipped
+    return bestTool
 end
 
 local lastInventoryPull = 0
-local function pullWeightFromWeightUI(ignoreCooldown)
-    if not ignoreCooldown and (tick() - lastInventoryPull < 2.5) then return end
+local function requestWeightFromGame()
+    if tick() - lastInventoryPull < 2.5 then return end
     lastInventoryPull = tick()
 
     local frames = pGui:FindFirstChild("Frames")
@@ -563,51 +561,78 @@ local function pullWeightFromWeightUI(ignoreCooldown)
                     end
                 end)
             end
-            local found = getBestWeightTool()
-            if found then return end
+            return
         end
+    end
+
+    if weightEquipRemote then
+        pcall(function() weightEquipRemote:FireServer("Black Hole Barbell") end)
     end
 end
 
-local liftReady = false
-local lastEquipTick = 0
+local function triggerLiftInput(tool)
+    if tool then
+        pcall(function() tool:Activate() end)
+    end
+    pcall(function()
+        local cam = Workspace.CurrentCamera
+        if cam then
+            local vp = cam.ViewportSize
+            local tx, ty = math.max(10, vp.X - 20), math.max(10, vp.Y - 20)
+            VirtualInputManager:SendTouchEvent(42, 0, tx, ty)
+            VirtualInputManager:SendTouchEvent(42, 2, tx, ty)
+        end
+    end)
+end
 
-local function stepAutoLift(doClick, ignorePullCooldown)
-    if not autoLift or not liftReady then return end
+local lastEquipAttempt = 0
+local function stepAutoLift(doTap)
+    if not autoLift then return end
+
     local char = player.Character
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     if not hum or hum.Health <= 0 then return end
 
-    local tool, isEquipped = getBestWeightTool()
-    if not tool then
-        pullWeightFromWeightUI(ignorePullCooldown)
-        tool, isEquipped = getBestWeightTool()
-    end
-
-    if tool then
-        if activeWeightName ~= tool.Name then
-            activeWeightName = tool.Name
+    -- STAP 1: Check eerst of je al een barbell ge-equipped hebt (in je hand)
+    local equippedTool = getEquippedWeightTool(char)
+    if equippedTool then
+        if activeWeightName ~= equippedTool.Name then
+            activeWeightName = equippedTool.Name
             updateDashboard()
         end
-        if not isEquipped then
-            lastEquipTick = tick()
-            pcall(function() hum:EquipTool(tool) end)
-            for _, desc in ipairs(tool:GetDescendants()) do
-                disableVisualNoise(desc)
-            end
-            return
+        if doTap then
+            triggerLiftInput(equippedTool)
+        else
+            pcall(function() equippedTool:Activate() end)
         end
-
-        if tick() - lastEquipTick < 0.35 then return end
-
-        pcall(function() tool:Activate() end)
+        return
     end
 
-    if doClick then
-        pcall(function()
-            VirtualUser:CaptureController()
-            VirtualUser:ClickButton1(Vector2.new(0, 0))
-        end)
+    -- STAP 2: Niet ge-equipped -> Check of hij al in je Backpack zit
+    local backpackTool = getBackpackWeightTool()
+    if backpackTool then
+        if activeWeightName ~= backpackTool.Name .. " (EQUIPPING)" then
+            activeWeightName = backpackTool.Name .. " (EQUIPPING)"
+            updateDashboard()
+        end
+        if tick() - lastEquipAttempt >= 0.45 then
+            lastEquipAttempt = tick()
+            pcall(function() hum:EquipTool(backpackTool) end)
+            for _, desc in ipairs(backpackTool:GetDescendants()) do
+                disableVisualNoise(desc)
+            end
+        end
+        return
+    end
+
+    -- STAP 3: Noch in hand, noch in Backpack (net gespawned) -> Wacht even op server-load en vraag dan op
+    if activeWeightName ~= "WACHT OP BARBELL..." then
+        activeWeightName = "WACHT OP BARBELL..."
+        updateDashboard()
+    end
+
+    if tick() - lastSpawnTick >= 1.5 then
+        requestWeightFromGame()
     end
 end
 
@@ -618,9 +643,9 @@ task.spawn(function()
         if not CoreGui:FindFirstChild(uiName) and not (gethui and gethui():FindFirstChild(uiName)) then
             break
         end
-        if liftReady and autoLift then
+        if autoLift then
             clickTick = clickTick + 1
-            stepAutoLift(clickTick % 2 == 0, false)
+            stepAutoLift(clickTick % 2 == 0)
         end
     end
 end)
@@ -644,10 +669,8 @@ local function triggerAfkPulse()
     afkPulses = afkPulses + 1
     updateDashboard()
 
-    -- Laag 1: Schakel eventueel opnieuw gekoppelde Idled-listeners direct weer uit
     disableAllIdledListeners()
 
-    -- Laag 2: VirtualUser controller input
     pcall(function()
         VirtualUser:CaptureController()
         VirtualUser:Button2Down(Vector2.new(0, 0), Workspace.CurrentCamera.CFrame)
@@ -655,7 +678,6 @@ local function triggerAfkPulse()
         VirtualUser:Button2Up(Vector2.new(0, 0), Workspace.CurrentCamera.CFrame)
     end)
 
-    -- Laag 3: Echte Android Touch-injectie op dode hoek (4, 4) om mobiele idle-timer te resetten
     task.spawn(function()
         pcall(function()
             VirtualInputManager:SendTouchEvent(99, 0, 4, 4)
@@ -666,7 +688,6 @@ local function triggerAfkPulse()
         end)
     end)
 
-    -- Laag 4: Camera CFrame micro-nudge
     pcall(function()
         local cam = Workspace.CurrentCamera
         if cam then
@@ -677,7 +698,6 @@ local function triggerAfkPulse()
         end
     end)
 
-    -- Laag 5: Server-gerepliceerde micro-stap heen en terug + sprong
     task.spawn(function()
         pcall(function()
             local char = player.Character
@@ -702,7 +722,6 @@ table.insert(conns, player.Idled:Connect(function()
     triggerAfkPulse()
 end))
 
--- Elke 75 seconden (16x binnen 20 min) een volledige mobiele Anti-AFK puls + RAM cleanup
 task.spawn(function()
     while true do
         task.wait(75)
@@ -717,7 +736,6 @@ task.spawn(function()
     end
 end)
 
--- Auto-Reconnect voor zowel Desktop ErrorMessage als Android RobloxPromptGui
 local isReconnecting = false
 local function executeAutoReconnect()
     if not autoReconnectEnabled or isReconnecting then return end
@@ -894,6 +912,9 @@ end
 setupBeachGymWatcher()
 
 table.insert(conns, player.CharacterAdded:Connect(function(newChar)
+    lastSpawnTick = tick()
+    lastEquipAttempt = 0
+    lastInventoryPull = 0
     task.wait(0.2)
     disableAllIdledListeners()
     for _, desc in ipairs(newChar:GetDescendants()) do
@@ -905,9 +926,6 @@ table.insert(conns, player.CharacterAdded:Connect(function(newChar)
     else
         spawnPlatformUnderPlayer(newChar)
     end
-    task.wait(0.5)
-    lastEquipTick = 0
-    stepAutoLift(true, true)
 end))
 
 -- =====================================================================
@@ -1123,13 +1141,13 @@ end
 createStatusPill(0, "LIFT", autoLift, function(val)
     autoLift = val
     if val then
-        liftReady = true
-        lastEquipTick = 0
-        stepAutoLift(true, true)
+        lastEquipAttempt = 0
+        lastInventoryPull = 0
+        stepAutoLift(true)
     else
         local char = player.Character
         local hum = char and char:FindFirstChildOfClass("Humanoid")
-        if hum then
+        if hum and getEquippedWeightTool(char) then
             pcall(function() hum:UnequipTools() end)
         end
     end
@@ -1173,7 +1191,7 @@ FooterStatsLabel.Size = UDim2.new(1, -12, 1, 0)
 FooterStatsLabel.Position = UDim2.new(0, 6, 0, 0)
 FooterStatsLabel.BackgroundTransparency = 1
 FooterStatsLabel.Font = Enum.Font.GothamBold
-FooterStatsLabel.Text = "WEIGHT: ZOEKEN...  |  AFK: 0"
+FooterStatsLabel.Text = "WEIGHT: CHECKEN...  |  AFK: 0"
 FooterStatsLabel.TextColor3 = NeonGreen
 FooterStatsLabel.TextSize = 11
 
@@ -1287,12 +1305,4 @@ end
 -- =====================================================================
 obliterateWorldNow()
 triggerAfkPulse()
-
-task.spawn(function()
-    task.wait(1.0)
-    liftReady = true
-    lastEquipTick = 0
-    stepAutoLift(true, true)
-    task.wait(0.4)
-    stepAutoLift(true, true)
-end)
+stepAutoLift(true)
