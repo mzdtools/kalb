@@ -106,6 +106,7 @@ local activeBeachGym = nil
 local activeWeightName = "CHECKEN..."
 local lastSpawnTick = tick()
 local lastEngineInputTick = 0
+local idledHookedCount = 0
 
 local conns = {}
 local gymWatchConns = {}
@@ -123,7 +124,8 @@ local function updateDashboard()
     if ValGymLabel then ValGymLabel.Text = tostring(gymTpCount) end
     if ValMsLabel then ValMsLabel.Text = tostring(lastReactionMs) .. "ms" end
     if FooterStatsLabel then
-        local afkState = (lastEngineInputTick > 0 and (tick() - lastEngineInputTick) < 90) and "OK" or "..."
+        local afkState = (lastEngineInputTick > 0 and (tick() - lastEngineInputTick) < 120) and "OK"
+            or (idledHookedCount > 0 and "GUARD" or "VU")
         FooterStatsLabel.Text = string.format("WEIGHT: %s  |  AFK: %d [%s]", string.upper(activeWeightName), afkPulses, afkState)
     end
 end
@@ -407,7 +409,7 @@ local function setupCleanVoidEnvironment()
 end
 
 -- =====================================================================
--- CHECK-FIRST EQUIP LOGICA & ANDROID AUTO-LIFT
+-- CHECK-FIRST EQUIP LOGICA & STILLE AUTO-LIFT (GEEN SCREEN-TOUCH SPAM)
 -- =====================================================================
 local function getEquippedWeightTool(char)
     if not char then return nil, 999 end
@@ -526,27 +528,8 @@ local function requestWeightFromGame()
     end
 end
 
-local function triggerLiftInput(tool)
-    if tool then
-        pcall(function() tool:Activate() end)
-    end
-    pcall(function()
-        local cam = Workspace.CurrentCamera
-        if cam then
-            local vp = cam.ViewportSize
-            local tx, ty = math.max(30, vp.X - 35), math.max(120, vp.Y - 35)
-            VirtualInputManager:SendTouchEvent(2, 0, tx, ty)
-            task.delay(0.05, function()
-                if isAlive then
-                    pcall(VirtualInputManager.SendTouchEvent, VirtualInputManager, 2, 2, tx, ty)
-                end
-            end)
-        end
-    end)
-end
-
 local lastEquipAttempt = 0
-local function stepAutoLift(doTap)
+local function stepAutoLift()
     if not isAlive or not autoLift then return end
 
     local char = player.Character
@@ -569,14 +552,10 @@ local function stepAutoLift(doTap)
         return
     end
 
-    -- STAP 2: Check of je al het sterkste beschikbare gewicht vasthebt -> direct liften
+    -- STAP 2: Check of je al het sterkste beschikbare gewicht vasthebt -> direct liften via tool:Activate()
     if equippedTool then
         setActiveWeightLabel(equippedTool.Name)
-        if doTap then
-            triggerLiftInput(equippedTool)
-        else
-            pcall(function() equippedTool:Activate() end)
-        end
+        pcall(function() equippedTool:Activate() end)
         return
     end
 
@@ -588,19 +567,30 @@ local function stepAutoLift(doTap)
 end
 
 -- =====================================================================
--- BULLETPROOF MULTI-SUBSYSTEM ANTI-AFK (ANDROID / MUMU / DELTA / PC)
+-- SILENT ANTI-AFK SYSTEEM (ZERO CLICK, ZERO CURSOR STEAL, ZERO TOUCH)
+-- Gebaseerd op Infinite Yield, NoTwistedHere & ScriptBlox/Delta patterns
 -- =====================================================================
 local triggerAfkPulse
 local isPulsingAfk = false
 
 table.insert(conns, UserInputService.InputBegan:Connect(function()
     if not isAlive then return end
-    local wasOk = (lastEngineInputTick > 0 and (tick() - lastEngineInputTick) < 90)
+    local wasOk = (lastEngineInputTick > 0 and (tick() - lastEngineInputTick) < 120)
     lastEngineInputTick = tick()
     if not wasOk then
         updateDashboard()
     end
 end))
+
+local function silenceWindowFocusIdle()
+    pcall(function()
+        if getconnections then
+            for _, conn in pairs(getconnections(UserInputService.WindowFocusReleased)) do
+                if conn.Disable then pcall(conn.Disable, conn) end
+            end
+        end
+    end)
+end
 
 local function refreshIdledGuard()
     if myIdledConn then
@@ -608,14 +598,21 @@ local function refreshIdledGuard()
         myIdledConn = nil
     end
 
+    local disabled = 0
     pcall(function()
         if getconnections then
             for _, conn in pairs(getconnections(player.Idled)) do
-                if conn.Disable then pcall(conn.Disable, conn) end
-                if conn.Disconnect then pcall(conn.Disconnect, conn) end
+                if conn.Disable then
+                    local ok = pcall(conn.Disable, conn)
+                    if ok then disabled = disabled + 1 end
+                elseif conn.Disconnect then
+                    local ok = pcall(conn.Disconnect, conn)
+                    if ok then disabled = disabled + 1 end
+                end
             end
         end
     end)
+    idledHookedCount = disabled
 
     if isAlive then
         myIdledConn = player.Idled:Connect(function()
@@ -626,111 +623,33 @@ local function refreshIdledGuard()
     end
 end
 
-local function getSafeViewportPoint()
-    local cam = Workspace.CurrentCamera
-    local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
-    local inset = GuiService:GetGuiInset()
-    local x = math.max(50, vp.X - 35)
-    local y = math.max(inset.Y + 80, vp.Y - 35)
-    return x, y
-end
-
 triggerAfkPulse = function()
     if not isAlive or not antiAfkEnabled or isPulsingAfk then return end
     isPulsingAfk = true
 
     pcall(function()
         afkPulses = afkPulses + 1
-        updateDashboard()
+        silenceWindowFocusIdle()
         refreshIdledGuard()
 
-        -- Laag 1: VirtualInputManager Keyboard (F15, 0.12s hold) + Android Touch (finger ID 1, 20px swipe)
+        -- Laag 1: Stille VirtualUser Right-Click (verplaatst GEEN cursor en klikt nergens op het scherm)
+        pcall(function()
+            VirtualUser:CaptureController()
+            VirtualUser:ClickButton2(Vector2.new())
+        end)
+
+        -- Laag 2: Stille VirtualInputManager KeyCode.Unknown (geen echte toets, geen muis, geen touch)
         task.spawn(function()
             pcall(function()
-                VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F15, false, game)
-                task.wait(0.12)
+                VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Unknown, false, game)
+                task.wait(0.05)
                 if isAlive then
-                    VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F15, false, game)
-                end
-            end)
-            task.wait(0.08)
-            if not isAlive then return end
-            pcall(function()
-                local tx, ty = getSafeViewportPoint()
-                VirtualInputManager:SendTouchEvent(1, 0, tx, ty)
-                task.wait(0.10)
-                if isAlive then
-                    VirtualInputManager:SendTouchEvent(1, 1, tx - 20, ty)
-                    task.wait(0.10)
-                end
-                if isAlive then
-                    VirtualInputManager:SendTouchEvent(1, 2, tx - 20, ty)
+                    VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Unknown, false, game)
                 end
             end)
         end)
 
-        -- Laag 2: VirtualInputManager MouseMove + Right-Click (Button 1, 0.12s hold -> klikt nooit op UI)
-        task.spawn(function()
-            pcall(function()
-                local mx, my = getSafeViewportPoint()
-                VirtualInputManager:SendMouseMoveEvent(mx, my, game)
-                task.wait(0.06)
-                if not isAlive then return end
-                VirtualInputManager:SendMouseMoveEvent(mx - 6, my - 6, game)
-                task.wait(0.06)
-                if not isAlive then return end
-                VirtualInputManager:SendMouseButtonEvent(mx - 6, my - 6, 1, true, game, 0)
-                task.wait(0.12)
-                if isAlive then
-                    VirtualInputManager:SendMouseButtonEvent(mx - 6, my - 6, 1, false, game, 0)
-                end
-            end)
-        end)
-
-        -- Laag 3: VirtualUser (ClickButton2 + 0.40s Button2Down/Up voor >= 8 frames op 20 FPS)
-        task.spawn(function()
-            pcall(function()
-                VirtualUser:CaptureController()
-                VirtualUser:ClickButton2(Vector2.new())
-                local cam = Workspace.CurrentCamera
-                local cf = cam and cam.CFrame or CFrame.new()
-                VirtualUser:Button2Down(Vector2.new(0, 0), cf)
-                task.wait(0.40)
-                if isAlive then
-                    local camNow = Workspace.CurrentCamera
-                    VirtualUser:Button2Up(Vector2.new(0, 0), camNow and camNow.CFrame or cf)
-                end
-            end)
-        end)
-
-        -- Laag 4: Camera micro-pulse & Character anti-freeze
-        task.spawn(function()
-            pcall(function()
-                local cam = Workspace.CurrentCamera
-                if cam then
-                    local orig = cam.CFrame
-                    cam.CFrame = orig * CFrame.Angles(0, 0.001, 0)
-                    task.wait(0.05)
-                    if isAlive and Workspace.CurrentCamera == cam then
-                        cam.CFrame = orig
-                    end
-                end
-            end)
-            pcall(function()
-                local char = player.Character
-                local hum = char and char:FindFirstChildOfClass("Humanoid")
-                if hum and hum.Health > 0 then
-                    hum:Move(Vector3.new(0.25, 0, 0), false)
-                    task.wait(0.08)
-                    hum:Move(Vector3.new(-0.25, 0, 0), false)
-                    task.wait(0.08)
-                    hum:Move(Vector3.zero, false)
-                    if hum.FloorMaterial ~= Enum.Material.Air then
-                        hum.Jump = true
-                    end
-                end
-            end)
-        end)
+        updateDashboard()
     end)
 
     isPulsingAfk = false
@@ -988,6 +907,7 @@ table.insert(conns, player.CharacterAdded:Connect(function(newChar)
     task.wait(0.2)
     if not isAlive then return end
 
+    silenceWindowFocusIdle()
     refreshIdledGuard()
     for _, desc in ipairs(newChar:GetDescendants()) do
         disableVisualNoise(desc)
@@ -1215,7 +1135,7 @@ createStatusPill(0, "LIFT", autoLift, function(val)
     if val then
         lastEquipAttempt = 0
         lastInventoryPull = 0
-        stepAutoLift(true)
+        stepAutoLift()
     else
         local char = player.Character
         local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -1241,7 +1161,11 @@ end)
 createStatusPill(0.762, "AFK", antiAfkEnabled, function(val)
     antiAfkEnabled = val
     autoReconnectEnabled = val
-    if val then triggerAfkPulse() end
+    if val then
+        triggerAfkPulse()
+    else
+        updateDashboard()
+    end
 end)
 
 local Footer = Instance.new("Frame", MainFrame)
@@ -1266,7 +1190,7 @@ FooterStatsLabel.TextColor3 = NeonGreen
 FooterStatsLabel.TextSize = 11
 FooterStatsLabel.TextTruncate = Enum.TextTruncate.AtEnd
 
--- Android-veilig draggen (wordt niet onderbroken door Auto-Lift of AFK touch events)
+-- Soepel verslepen (muis + touch)
 local dragging = false
 local activeDragInput = nil
 local dragIsMouse = false
@@ -1380,16 +1304,25 @@ local function activateBonusButton(btn)
 
     if not isAlive or not autoBonus or not btn or not btn.Parent or not btn.Visible then return end
 
+    local firedSignal = false
     pcall(function()
         if getconnections then
-            for _, conn in pairs(getconnections(btn.MouseButton1Click)) do conn:Fire() end
-            for _, conn in pairs(getconnections(btn.Activated)) do conn:Fire() end
+            for _, conn in pairs(getconnections(btn.MouseButton1Click)) do
+                conn:Fire()
+                firedSignal = true
+            end
+            for _, conn in pairs(getconnections(btn.Activated)) do
+                conn:Fire()
+                firedSignal = true
+            end
         end
     end)
 
-    if btn and btn.Parent and btn.Visible then clickScreenAtButton(btn) end
-    if bonusRemote and btn and btn.Parent and btn.Visible then
+    if bonusRemote then
         pcall(function() bonusRemote:FireServer() end)
+    end
+    if not firedSignal and btn and btn.Parent and btn.Visible then
+        clickScreenAtButton(btn)
     end
 end
 
@@ -1594,20 +1527,18 @@ end))
 -- BACKGROUND LOOPS & DIRECT STARTEN
 -- =====================================================================
 task.spawn(function()
-    local clickTick = 0
     while isAlive and ScreenGui.Parent do
         task.wait(0.08)
         if not isAlive or not ScreenGui.Parent then break end
         if autoLift then
-            clickTick = clickTick + 1
-            stepAutoLift(clickTick % 2 == 0)
+            stepAutoLift()
         end
     end
 end)
 
 task.spawn(function()
     while isAlive and ScreenGui.Parent do
-        task.wait(45)
+        task.wait(55)
         if not isAlive or not ScreenGui.Parent then break end
         if setfpscap then pcall(setfpscap, 20) end
         pcall(function() Workspace.Terrain:Clear() end)
@@ -1618,6 +1549,7 @@ task.spawn(function()
 end)
 
 obliterateWorldNow()
+silenceWindowFocusIdle()
 refreshIdledGuard()
 triggerAfkPulse()
-stepAutoLift(true)
+stepAutoLift()
