@@ -1,8 +1,9 @@
 -- =====================================================================
--- MzD KALB script 
+-- MzD KALB script - Ultra-Void v4.9 (Zero-Visuals + 3D Render Toggle)
 -- =====================================================================
 
-local AUTO_REJOIN_MINUTES = 0 -- Optioneel: zet bijv. op 180 (3 uur) om game-RAM/CoreGui in public servers periodiek te resetten
+local AUTO_REJOIN_MINUTES = 0   -- Optioneel: zet bijv. op 180 (3 uur) voor RAM-reset in public servers
+local DISABLE_3D_AT_START = false -- Zet op true om 3D-rendering direct bij opstarten uit te zetten
 
 if setfpscap then pcall(setfpscap, 20) end
 if not game:IsLoaded() then
@@ -30,8 +31,9 @@ while not player do
 end
 local pGui = player:WaitForChild("PlayerGui")
 
+local render3dEnabled = not DISABLE_3D_AT_START
 pcall(function()
-    RunService:Set3dRenderingEnabled(true)
+    RunService:Set3dRenderingEnabled(render3dEnabled)
 end)
 
 local sharedFolder = ReplicatedStorage:FindFirstChild("Shared") or ReplicatedStorage:WaitForChild("Shared", 10)
@@ -210,6 +212,7 @@ local function spawnPlatformUnderPlayer(char)
     safePad.Position = padPos
     safePad.Anchored = true
     safePad.CanCollide = true
+    safePad.CastShadow = false
     safePad.Material = Enum.Material.SmoothPlastic
     safePad.Color = Color3.fromRGB(16, 42, 32)
     safePad.TopSurface = Enum.SurfaceType.Smooth
@@ -229,9 +232,11 @@ local function spawnPlatformUnderPlayer(char)
 end
 
 -- =====================================================================
--- TOTALE WERELD-, VFX- & UI-SLOOP
+-- TOTALE WERELD-, VFX-, TOOL-, BEACH GYM- & UI-SLOOP
 -- =====================================================================
-local function isGymBillboard(inst)
+local protectedGymFloors = setmetatable({}, {__mode = "k"})
+
+local function isGymDescendant(inst)
     local gm = inst:FindFirstAncestor("GymMachine")
     return gm ~= nil and gm.Parent ~= nil and gm.Parent.Name == "Debris"
 end
@@ -284,7 +289,7 @@ local function disableVisualNoise(inst)
             inst.Brightness = 0
             lockProperty(inst, "Enabled", false)
         elseif inst:IsA("BillboardGui") or inst:IsA("SurfaceGui") then
-            if not isGymBillboard(inst) then
+            if not isGymDescendant(inst) then
                 inst.Enabled = false
                 lockProperty(inst, "Enabled", false)
             end
@@ -293,6 +298,12 @@ local function disableVisualNoise(inst)
         elseif inst:IsA("Clouds") then
             inst.Enabled = false
             inst.Cover = 0
+        elseif inst:IsA("SurfaceAppearance") then
+            safeDestroy(inst)
+            return
+        elseif inst:IsA("Decal") or inst:IsA("Texture") then
+            inst.Transparency = 1
+            lockProperty(inst, "Transparency", 1)
         end
     end)
 
@@ -305,21 +316,79 @@ local function disableVisualNoise(inst)
             end
         end
 
+        -- Tool (Barbell) volledig onzichtbaar maken zonder delen te slopen
+        if inst:FindFirstAncestorOfClass("Tool") then
+            if inst:IsA("BasePart") then
+                inst.Transparency = 1
+                inst.CastShadow = false
+                inst.Material = Enum.Material.SmoothPlastic
+                lockProperty(inst, "Transparency", 1)
+                lockProperty(inst, "Material", Enum.Material.SmoothPlastic)
+            elseif inst:IsA("SpecialMesh") then
+                inst.TextureId = ""
+            end
+            return
+        end
+
+        -- Beach Gym decoratie (palmboom, props, neon) onzichtbaar maken, hoofdvloer vlak houden
+        if isGymDescendant(inst) then
+            if inst:IsA("BasePart") then
+                inst.CastShadow = false
+                inst.Material = Enum.Material.SmoothPlastic
+                lockProperty(inst, "Material", Enum.Material.SmoothPlastic)
+                if protectedGymFloors[inst] then
+                    inst.Color = Color3.fromRGB(16, 42, 32)
+                    inst.Transparency = 0.25
+                else
+                    inst.Transparency = 1
+                    lockProperty(inst, "Transparency", 1)
+                end
+            elseif inst:IsA("SpecialMesh") then
+                inst.TextureId = ""
+            end
+            return
+        end
+
         local char = player.Character
         if char and inst:IsDescendantOf(char) then
-            if inst:IsA("BasePart") and inst.Parent == char then
-                if inst.Material == Enum.Material.Neon or inst.Material == Enum.Material.ForceField then
+            if inst:FindFirstAncestorOfClass("Accessory") then
+                if inst:IsA("BasePart") then
+                    inst.Transparency = 1
+                    inst.CastShadow = false
                     inst.Material = Enum.Material.SmoothPlastic
+                    lockProperty(inst, "Transparency", 1)
+                elseif inst:IsA("SpecialMesh") then
+                    inst.TextureId = ""
                 end
+                return
+            end
+
+            if inst:IsA("BasePart") and inst.Parent == char then
+                inst.CastShadow = false
+                inst.Material = Enum.Material.SmoothPlastic
                 lockProperty(inst, "Material", Enum.Material.SmoothPlastic)
-            elseif (inst:IsA("BasePart") or inst:IsA("Model"))
-                and not inst:FindFirstAncestorOfClass("Tool")
-                and not inst:FindFirstAncestorOfClass("Accessory") then
+            elseif (inst:IsA("BasePart") or inst:IsA("Model")) then
                 if hasVfxKeyword(inst.Name) then
                     safeDestroy(inst)
                 end
             end
         end
+    end)
+end
+
+local function disableUnneededClientExtras()
+    pcall(function()
+        local ps = player:FindFirstChild("PlayerScripts")
+        if not ps then return end
+        for _, name in ipairs({"SpookyDecorMotion", "RbxCharacterSounds"}) do
+            local s = ps:FindFirstChild(name)
+            if s and s:IsA("LocalScript") then
+                s.Disabled = true
+            end
+        end
+    end)
+    pcall(function()
+        UserSettings():GetService("UserGameSettings").MasterVolume = 0
     end)
 end
 
@@ -390,12 +459,14 @@ local function setupCleanVoidEnvironment()
     pcall(function()
         Lighting.GlobalShadows = false
         Lighting.ClockTime = 12
-        Lighting.Brightness = 1.4
+        Lighting.Brightness = 1.2
         Lighting.EnvironmentDiffuseScale = 0
         Lighting.EnvironmentSpecularScale = 0
         Lighting.Ambient = Color3.fromRGB(165, 175, 170)
         Lighting.OutdoorAmbient = Color3.fromRGB(165, 175, 170)
-        Lighting.FogEnd = 9e9
+        Lighting.FogStart = 0
+        Lighting.FogEnd = 220
+        Lighting.FogColor = Color3.fromRGB(7, 13, 11)
 
         for _, eff in ipairs(Lighting:GetChildren()) do
             if eff.Name ~= "MzD_VoidSky" then
@@ -408,12 +479,6 @@ local function setupCleanVoidEnvironment()
             sky.Name = "MzD_VoidSky"
             sky.CelestialBodiesShown = false
             sky.StarCount = 0
-            sky.SkyboxBk = "rbxassetid://0"
-            sky.SkyboxDn = "rbxassetid://0"
-            sky.SkyboxFt = "rbxassetid://0"
-            sky.SkyboxLf = "rbxassetid://0"
-            sky.SkyboxRt = "rbxassetid://0"
-            sky.SkyboxUp = "rbxassetid://0"
             sky.Parent = Lighting
         end
 
@@ -552,7 +617,6 @@ local function stepAutoLift()
     local equippedTool, equippedRank = getEquippedWeightTool(char)
     local backpackTool, backpackRank = getBackpackWeightTool()
 
-    -- STAP 1: Check eerst of je al een sterker gewicht in je Backpack hebt dan in je hand
     if backpackTool and backpackRank < equippedRank then
         setActiveWeightLabel(backpackTool.Name .. " (EQUIPPING)")
         if tick() - lastEquipAttempt >= 0.45 then
@@ -565,14 +629,12 @@ local function stepAutoLift()
         return
     end
 
-    -- STAP 2: Check of je al het sterkste beschikbare gewicht vasthebt -> direct liften via tool:Activate()
     if equippedTool then
         setActiveWeightLabel(equippedTool.Name)
         pcall(function() equippedTool:Activate() end)
         return
     end
 
-    -- STAP 3: Noch in hand, noch in Backpack -> Wacht kort op server-load en vraag dan op
     setActiveWeightLabel("WACHT OP BARBELL...")
     if tick() - lastSpawnTick >= 1.5 then
         requestWeightFromGame()
@@ -644,13 +706,11 @@ triggerAfkPulse = function()
         silenceWindowFocusIdle()
         refreshIdledGuard()
 
-        -- Laag 1: Stille VirtualUser Right-Click (verplaatst geen cursor en klikt nergens op het scherm)
         pcall(function()
             VirtualUser:CaptureController()
             VirtualUser:ClickButton2(Vector2.new())
         end)
 
-        -- Laag 2: Stille VirtualInputManager KeyCode.Unknown (geen echte toets, geen muis, geen touch)
         task.spawn(function()
             pcall(function()
                 VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Unknown, false, game)
@@ -731,7 +791,7 @@ task.spawn(function()
 end)
 
 -- =====================================================================
--- BEACH GYM TELEPORT
+-- BEACH GYM TELEPORT & VISUAL-STRIP
 -- =====================================================================
 local function findBeachGym()
     local debris = Workspace:FindFirstChild("Debris")
@@ -748,7 +808,7 @@ end
 local function getBeachGymTargetCFrame(gymObj, char)
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return nil end
+    if not hrp then return nil, nil end
 
     local sandFloor = nil
     local bestFloorArea = 0
@@ -777,14 +837,24 @@ local function getBeachGymTargetCFrame(gymObj, char)
     local bboxCf = gymObj:IsA("Model") and gymObj:GetBoundingBox() or nil
     local centerX = refPart and refPart.Position.X or (bboxCf and bboxCf.Position.X)
     local centerZ = refPart and refPart.Position.Z or (bboxCf and bboxCf.Position.Z)
-    if not centerX or not centerZ then return nil end
+    if not centerX or not centerZ then return nil, nil end
 
     local floorTopY = sandFloor and (sandFloor.Position.Y + sandFloor.Size.Y * 0.5)
         or (refPart and (refPart.Position.Y - refPart.Size.Y * 0.5) or (bboxCf and bboxCf.Position.Y))
 
     local hipHeight = hum and hum.HipHeight or 2
     local standY = floorTopY + hipHeight + (hrp.Size.Y * 0.5) + 0.15
-    return CFrame.new(centerX + 2, standY, centerZ + 2)
+    return CFrame.new(centerX + 2, standY, centerZ + 2), sandFloor
+end
+
+local function stripBeachGymVisuals(gymObj, sandFloor)
+    if not gymObj then return end
+    if sandFloor then
+        protectedGymFloors[sandFloor] = true
+    end
+    for _, desc in ipairs(gymObj:GetDescendants()) do
+        disableVisualNoise(desc)
+    end
 end
 
 local gymTouchPartsCache = setmetatable({}, {__mode = "k"})
@@ -830,12 +900,14 @@ local function teleportToBeachGym(gymObj)
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     if not hrp then return end
 
-    local targetCFrame = getBeachGymTargetCFrame(gymObj, char)
+    local targetCFrame, sandFloor = getBeachGymTargetCFrame(gymObj, char)
     if not targetCFrame then return end
 
     handledGyms[gymObj] = true
     removeSafePlatform()
     activeBeachGym = gymObj
+
+    stripBeachGymVisuals(gymObj, sandFloor)
 
     hrp.Anchored = true
     hrp.CFrame = targetCFrame
@@ -921,6 +993,7 @@ table.insert(conns, player.CharacterAdded:Connect(function(newChar)
     if not isAlive then return end
 
     disableVfxRemote()
+    disableUnneededClientExtras()
     silenceWindowFocusIdle()
     refreshIdledGuard()
     for _, desc in ipairs(newChar:GetDescendants()) do
@@ -1016,23 +1089,43 @@ LogoTextM.TextColor3 = NeonGreen
 LogoTextM.TextSize = 14
 
 local TitleLabel = Instance.new("TextLabel", TopBar)
-TitleLabel.Size = UDim2.new(1, -145, 1, 0)
-TitleLabel.Position = UDim2.new(0, 58, 0, 0)
+TitleLabel.Size = UDim2.new(1, -198, 1, 0)
+TitleLabel.Position = UDim2.new(0, 56, 0, 0)
 TitleLabel.BackgroundTransparency = 1
 TitleLabel.Font = Enum.Font.GothamBlack
 TitleLabel.Text = "MzD KALB // VOID"
 TitleLabel.TextColor3 = TextPure
-TitleLabel.TextSize = 15
+TitleLabel.TextSize = 13
 TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+TitleLabel.TextTruncate = Enum.TextTruncate.AtEnd
+
+local Render3DBtn = Instance.new("TextButton", TopBar)
+Render3DBtn.Size = UDim2.new(0, 48, 0, 28)
+Render3DBtn.Position = UDim2.new(1, -134, 0.5, -14)
+Render3DBtn.BackgroundColor3 = render3dEnabled and Color3.fromRGB(14, 120, 74) or Color3.fromRGB(45, 45, 45)
+Render3DBtn.Font = Enum.Font.GothamBlack
+Render3DBtn.Text = render3dEnabled and "3D:AAN" or "3D:UIT"
+Render3DBtn.TextColor3 = TextPure
+Render3DBtn.TextSize = 10
+Instance.new("UICorner", Render3DBtn).CornerRadius = UDim.new(0, 7)
+
+Render3DBtn.MouseButton1Click:Connect(function()
+    render3dEnabled = not render3dEnabled
+    Render3DBtn.Text = render3dEnabled and "3D:AAN" or "3D:UIT"
+    Render3DBtn.BackgroundColor3 = render3dEnabled and Color3.fromRGB(14, 120, 74) or Color3.fromRGB(45, 45, 45)
+    pcall(function()
+        RunService:Set3dRenderingEnabled(render3dEnabled)
+    end)
+end)
 
 local ZoomBtn = Instance.new("TextButton", TopBar)
-ZoomBtn.Size = UDim2.new(0, 42, 0, 28)
+ZoomBtn.Size = UDim2.new(0, 40, 0, 28)
 ZoomBtn.Position = UDim2.new(1, -82, 0.5, -14)
 ZoomBtn.BackgroundColor3 = Color3.fromRGB(18, 42, 33)
 ZoomBtn.Font = Enum.Font.GothamBlack
 ZoomBtn.Text = "1.0x"
 ZoomBtn.TextColor3 = NeonGreen
-ZoomBtn.TextSize = 12
+ZoomBtn.TextSize = 11
 Instance.new("UICorner", ZoomBtn).CornerRadius = UDim.new(0, 7)
 
 local zoomLevels = {1.0, 1.2, 1.35}
@@ -1379,6 +1472,9 @@ CloseBtn.MouseButton1Click:Connect(function()
     isAlive = false
     autoLift, autoBonus, autoBeachGym, antiAfkEnabled, autoReconnectEnabled = false, false, false, false, false
 
+    pcall(function()
+        RunService:Set3dRenderingEnabled(true)
+    end)
     if setfpscap then pcall(setfpscap, 60) end
     if myIdledConn then pcall(function() myIdledConn:Disconnect() end) end
     if activeGymDespawnConn then pcall(function() activeGymDespawnConn:Disconnect() end) end
@@ -1402,6 +1498,13 @@ CloseBtn.MouseButton1Click:Connect(function()
 
     removeSafePlatform()
 
+    pcall(function()
+        local ps = player:FindFirstChild("PlayerScripts")
+        local rbxSounds = ps and ps:FindFirstChild("RbxCharacterSounds")
+        if rbxSounds and rbxSounds:IsA("LocalScript") then
+            rbxSounds.Disabled = false
+        end
+    end)
     pcall(function()
         StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.All, true)
     end)
@@ -1442,6 +1545,7 @@ local function obliterateWorldNow()
     end
 
     setupCleanVoidEnvironment()
+    disableUnneededClientExtras()
     stripAllGameGuis()
 
     local char = player.Character
@@ -1484,6 +1588,12 @@ local function obliterateWorldNow()
                 end
             end
         end
+    end
+
+    local existingGym = findBeachGym()
+    if existingGym then
+        local _, sandFloor = getBeachGymTargetCFrame(existingGym, char)
+        if sandFloor then protectedGymFloors[sandFloor] = true end
     end
 
     for _, desc in ipairs(Workspace:GetDescendants()) do
