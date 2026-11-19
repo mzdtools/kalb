@@ -2,6 +2,8 @@
 -- MzD KALB script 
 -- =====================================================================
 
+local AUTO_REJOIN_MINUTES = 0 -- Optioneel: zet bijv. op 180 (3 uur) om game-RAM/CoreGui in public servers periodiek te resetten
+
 if setfpscap then pcall(setfpscap, 20) end
 if not game:IsLoaded() then
     game.Loaded:Wait()
@@ -40,13 +42,16 @@ local bonusRemote = networkFolder and networkFolder:FindFirstChild("rev_TaviMish
 local weightEquipRemote = networkFolder and networkFolder:FindFirstChild("rev_WeightEquip")
 local vfxRemote = networkFolder and networkFolder:FindFirstChild("rev_VFX_UPD")
 
-if vfxRemote and getconnections then
-    pcall(function()
-        for _, conn in pairs(getconnections(vfxRemote.OnClientEvent)) do
-            if conn.Disable then conn:Disable() end
-        end
-    end)
+local function disableVfxRemote()
+    if vfxRemote and getconnections then
+        pcall(function()
+            for _, conn in pairs(getconnections(vfxRemote.OnClientEvent)) do
+                if conn.Disable then pcall(conn.Disable, conn) end
+            end
+        end)
+    end
 end
+disableVfxRemote()
 
 local uiName = "MzD_KALB_HUD"
 local existing = (gethui and gethui():FindFirstChild(uiName)) or CoreGui:FindFirstChild(uiName)
@@ -86,6 +91,13 @@ local VFX_NAME_KEYWORDS = {
     "aura", "glow", "vfx", "effect", "burst",
     "ring", "shock", "muscle", "bicep", "flex",
     "mesh", "part"
+}
+
+local IGNORED_WORKSPACE_FOLDERS = {
+    ["Areas"] = true,
+    ["Zones"] = true,
+    ["Machine"] = true,
+    ["KickUpgrades"] = true
 }
 
 -- =====================================================================
@@ -311,23 +323,26 @@ local function disableVisualNoise(inst)
     end)
 end
 
+local function filterHudChild(child)
+    if not isAlive or not child or not child:IsA("GuiObject") then return end
+    if child.Name == "BottomLeft" then
+        child.Visible = true
+        local friendsBoost = child:FindFirstChild("FriendsBoost")
+        if friendsBoost and friendsBoost:IsA("GuiObject") then
+            friendsBoost.Visible = false
+            lockProperty(friendsBoost, "Visible", false)
+        end
+    else
+        child.Visible = false
+        lockProperty(child, "Visible", false)
+    end
+end
+
 local function filterMainHud(hudGui)
     if not isAlive or not hudGui then return end
     hudGui.Enabled = true
     for _, child in ipairs(hudGui:GetChildren()) do
-        if child:IsA("GuiObject") then
-            if child.Name == "BottomLeft" then
-                child.Visible = true
-                local friendsBoost = child:FindFirstChild("FriendsBoost")
-                if friendsBoost and friendsBoost:IsA("GuiObject") then
-                    friendsBoost.Visible = false
-                    lockProperty(friendsBoost, "Visible", false)
-                end
-            else
-                child.Visible = false
-                lockProperty(child, "Visible", false)
-            end
-        end
+        filterHudChild(child)
     end
 end
 
@@ -336,9 +351,7 @@ local function hookMainHud(hudGui)
     filterMainHud(hudGui)
     if hookedHuds[hudGui] then return end
     hookedHuds[hudGui] = true
-    table.insert(conns, hudGui.ChildAdded:Connect(function()
-        if isAlive then filterMainHud(hudGui) end
-    end))
+    table.insert(conns, hudGui.ChildAdded:Connect(filterHudChild))
 end
 
 local function filterKickUpgrades(kuGui)
@@ -409,7 +422,7 @@ local function setupCleanVoidEnvironment()
 end
 
 -- =====================================================================
--- CHECK-FIRST EQUIP LOGICA & STILLE AUTO-LIFT (GEEN SCREEN-TOUCH SPAM)
+-- CHECK-FIRST EQUIP LOGICA & STILLE AUTO-LIFT
 -- =====================================================================
 local function getEquippedWeightTool(char)
     if not char then return nil, 999 end
@@ -568,7 +581,6 @@ end
 
 -- =====================================================================
 -- SILENT ANTI-AFK SYSTEEM (ZERO CLICK, ZERO CURSOR STEAL, ZERO TOUCH)
--- Gebaseerd op Infinite Yield, NoTwistedHere & ScriptBlox/Delta patterns
 -- =====================================================================
 local triggerAfkPulse
 local isPulsingAfk = false
@@ -632,7 +644,7 @@ triggerAfkPulse = function()
         silenceWindowFocusIdle()
         refreshIdledGuard()
 
-        -- Laag 1: Stille VirtualUser Right-Click (verplaatst GEEN cursor en klikt nergens op het scherm)
+        -- Laag 1: Stille VirtualUser Right-Click (verplaatst geen cursor en klikt nergens op het scherm)
         pcall(function()
             VirtualUser:CaptureController()
             VirtualUser:ClickButton2(Vector2.new())
@@ -656,15 +668,16 @@ triggerAfkPulse = function()
 end
 
 local isReconnecting = false
-local function executeAutoReconnect()
-    if not isAlive or not autoReconnectEnabled or isReconnecting then return end
+local function executeAutoReconnect(forceNewServer)
+    if not isAlive or isReconnecting then return end
+    if not forceNewServer and not autoReconnectEnabled then return end
     isReconnecting = true
 
     task.spawn(function()
         task.wait(2)
-        while isAlive and autoReconnectEnabled do
+        while isAlive and (forceNewServer or autoReconnectEnabled) do
             local ok = pcall(function()
-                if #Players:GetPlayers() > 1 and game.JobId and game.JobId ~= "" then
+                if not forceNewServer and #Players:GetPlayers() > 1 and game.JobId and game.JobId ~= "" then
                     TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, player)
                 else
                     TeleportService:Teleport(game.PlaceId, player)
@@ -685,16 +698,16 @@ end
 
 table.insert(conns, GuiService.ErrorMessageChanged:Connect(function(msg)
     if msg and msg ~= "" then
-        executeAutoReconnect()
+        executeAutoReconnect(false)
     end
 end))
 
 if GuiService:GetErrorMessage() ~= "" then
-    executeAutoReconnect()
+    executeAutoReconnect(false)
 end
 
 table.insert(conns, TeleportService.TeleportInitFailed:Connect(function(failedPlayer)
-    if failedPlayer == player and isAlive and autoReconnectEnabled then
+    if failedPlayer == player and isAlive and (autoReconnectEnabled or isReconnecting) then
         task.wait(2)
         pcall(function()
             TeleportService:Teleport(game.PlaceId, player)
@@ -707,11 +720,11 @@ task.spawn(function()
     local overlay = promptGui and promptGui:FindFirstChild("promptOverlay")
     if overlay and isAlive then
         if overlay:FindFirstChild("ErrorPrompt") then
-            executeAutoReconnect()
+            executeAutoReconnect(false)
         end
         table.insert(conns, overlay.ChildAdded:Connect(function(child)
             if child.Name == "ErrorPrompt" then
-                executeAutoReconnect()
+                executeAutoReconnect(false)
             end
         end))
     end
@@ -907,6 +920,7 @@ table.insert(conns, player.CharacterAdded:Connect(function(newChar)
     task.wait(0.2)
     if not isAlive then return end
 
+    disableVfxRemote()
     silenceWindowFocusIdle()
     refreshIdledGuard()
     for _, desc in ipairs(newChar:GetDescendants()) do
@@ -1227,41 +1241,8 @@ table.insert(conns, UserInputService.InputEnded:Connect(function(input)
     end
 end))
 
-CloseBtn.MouseButton1Click:Connect(function()
-    isAlive = false
-    autoLift, autoBonus, autoBeachGym, antiAfkEnabled, autoReconnectEnabled = false, false, false, false, false
-
-    if setfpscap then pcall(setfpscap, 60) end
-    if myIdledConn then pcall(function() myIdledConn:Disconnect() end) end
-    if activeGymDespawnConn then pcall(function() activeGymDespawnConn:Disconnect() end) end
-
-    for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
-    for _, c in ipairs(gymWatchConns) do pcall(function() c:Disconnect() end) end
-
-    for _, bucket in pairs(instanceLockConns) do
-        for _, c in pairs(bucket) do
-            pcall(function() c:Disconnect() end)
-        end
-    end
-    table.clear(instanceLockConns)
-
-    removeSafePlatform()
-
-    pcall(function()
-        StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.All, true)
-    end)
-    pcall(function()
-        local touchGui = pGui:FindFirstChild("TouchGui")
-        if touchGui and touchGui:IsA("LayerCollector") then
-            touchGui.Enabled = true
-        end
-    end)
-
-    ScreenGui:Destroy()
-end)
-
 -- =====================================================================
--- HYBRID BONUS CLAIMER + POPBONUS VERIFIED COUNTER
+-- HYBRID BONUS CLAIMER + MEMORY-SAFE WATCHER (GEEN NIL-LEK!)
 -- =====================================================================
 local function clickScreenAtButton(btn)
     pcall(function()
@@ -1295,7 +1276,7 @@ local function activateBonusButton(btn)
             end
         end)
         task.wait(0.015)
-        cConn:Disconnect()
+        if cConn then cConn:Disconnect() end
         lbl = btn and btn:FindFirstChildOfClass("TextLabel")
         if lbl and lbl.Text ~= "" then
             lastSeenMultiplier = string.lower(lbl.Text)
@@ -1344,6 +1325,20 @@ local function onPopBonusConfirmed()
 end
 
 local hookedBonusButtons = setmetatable({}, {__mode = "k"})
+local bonusWatchConns = setmetatable({}, {__mode = "k"})
+
+local function cleanupBonusWatch(btn)
+    local list = bonusWatchConns[btn]
+    if list then
+        for _, c in ipairs(list) do
+            pcall(function() c:Disconnect() end)
+        end
+        bonusWatchConns[btn] = nil
+    end
+    hookedBonusButtons[btn] = nil
+    claimedBonusBtns[btn] = nil
+end
+
 local function watchKickUpgradesChild(child)
     if not isAlive then return end
     if child.Name == "PopBonus" then
@@ -1352,11 +1347,17 @@ local function watchKickUpgradesChild(child)
         if child.Visible then task.spawn(activateBonusButton, child) end
         if not hookedBonusButtons[child] then
             hookedBonusButtons[child] = true
-            table.insert(conns, child:GetPropertyChangedSignal("Visible"):Connect(function()
+            local visConn = child:GetPropertyChangedSignal("Visible"):Connect(function()
                 if isAlive and child.Visible then
                     task.spawn(activateBonusButton, child)
                 end
-            end))
+            end)
+            local ancConn = child.AncestryChanged:Connect(function(_, newParent)
+                if not newParent then
+                    cleanupBonusWatch(child)
+                end
+            end)
+            bonusWatchConns[child] = {visConn, ancConn}
         end
     else
         filterKickUpgrades(child.Parent)
@@ -1373,6 +1374,46 @@ local function hookKickUpgrades(kuGui)
     end
     table.insert(conns, kuGui.ChildAdded:Connect(watchKickUpgradesChild))
 end
+
+CloseBtn.MouseButton1Click:Connect(function()
+    isAlive = false
+    autoLift, autoBonus, autoBeachGym, antiAfkEnabled, autoReconnectEnabled = false, false, false, false, false
+
+    if setfpscap then pcall(setfpscap, 60) end
+    if myIdledConn then pcall(function() myIdledConn:Disconnect() end) end
+    if activeGymDespawnConn then pcall(function() activeGymDespawnConn:Disconnect() end) end
+
+    for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+    for _, c in ipairs(gymWatchConns) do pcall(function() c:Disconnect() end) end
+
+    for _, list in pairs(bonusWatchConns) do
+        for _, c in ipairs(list) do
+            pcall(function() c:Disconnect() end)
+        end
+    end
+    table.clear(bonusWatchConns)
+
+    for _, bucket in pairs(instanceLockConns) do
+        for _, c in pairs(bucket) do
+            pcall(function() c:Disconnect() end)
+        end
+    end
+    table.clear(instanceLockConns)
+
+    removeSafePlatform()
+
+    pcall(function()
+        StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.All, true)
+    end)
+    pcall(function()
+        local touchGui = pGui:FindFirstChild("TouchGui")
+        if touchGui and touchGui:IsA("LayerCollector") then
+            touchGui.Enabled = true
+        end
+    end)
+
+    ScreenGui:Destroy()
+end)
 
 -- =====================================================================
 -- WORLD, GUI & LIGHTING WATCHERS + OBLITERATE
@@ -1404,12 +1445,6 @@ local function obliterateWorldNow()
     stripAllGameGuis()
 
     local char = player.Character
-    local emptyFolders = {
-        ["Areas"] = true,
-        ["Zones"] = true,
-        ["Machine"] = true,
-        ["KickUpgrades"] = true
-    }
     local protectedRoots = {
         ["Camera"] = true,
         ["Terrain"] = true,
@@ -1420,7 +1455,7 @@ local function obliterateWorldNow()
     }
 
     for _, obj in ipairs(Workspace:GetChildren()) do
-        if emptyFolders[obj.Name] then
+        if IGNORED_WORKSPACE_FOLDERS[obj.Name] then
             pcall(function() obj:ClearAllChildren() end)
         elseif not protectedRoots[obj.Name] and obj ~= char then
             pcall(function() obj:Destroy() end)
@@ -1463,6 +1498,37 @@ local function obliterateWorldNow()
     end
 end
 
+local function isInsideIgnoredRoot(desc)
+    local cur = desc
+    while cur and cur.Parent and cur.Parent ~= Workspace do
+        cur = cur.Parent
+    end
+    if not cur or cur.Parent ~= Workspace then return false end
+    local rootName = cur.Name
+    if IGNORED_WORKSPACE_FOLDERS[rootName] then
+        return true
+    elseif rootName == "Players" then
+        local pModel = desc
+        while pModel and pModel.Parent ~= cur do
+            pModel = pModel.Parent
+        end
+        return pModel ~= nil and pModel.Name ~= player.Name
+    elseif rootName == "Debris" then
+        local dChild = desc
+        while dChild and dChild.Parent ~= cur do
+            dChild = dChild.Parent
+        end
+        if not dChild then return false end
+        if dChild.Name ~= "GymMachine" then return true end
+        local gmChild = desc
+        while gmChild and gmChild.Parent ~= dChild do
+            gmChild = gmChild.Parent
+        end
+        return gmChild ~= nil and string.lower(gmChild.Name) ~= "beach gym"
+    end
+    return false
+end
+
 table.insert(conns, Workspace.ChildAdded:Connect(function(obj)
     if not isAlive or not obj then return end
     local name = obj.Name
@@ -1471,7 +1537,7 @@ table.insert(conns, Workspace.ChildAdded:Connect(function(obj)
         or obj == player.Character then
         return
     end
-    if name == "Areas" or name == "Zones" or name == "Machine" or name == "KickUpgrades" then
+    if IGNORED_WORKSPACE_FOLDERS[name] then
         pcall(function() obj:ClearAllChildren() end)
         return
     end
@@ -1484,7 +1550,7 @@ table.insert(conns, Workspace.DescendantAdded:Connect(function(desc)
     if parent then
         local pName = parent.Name
         if parent.Parent == Workspace then
-            if pName == "Areas" or pName == "Zones" or pName == "Machine" or pName == "KickUpgrades" then
+            if IGNORED_WORKSPACE_FOLDERS[pName] then
                 safeDestroy(desc)
                 return
             elseif pName == "Players" and desc.Name ~= player.Name then
@@ -1501,6 +1567,7 @@ table.insert(conns, Workspace.DescendantAdded:Connect(function(desc)
             end
         end
     end
+    if isInsideIgnoredRoot(desc) then return end
     disableVisualNoise(desc)
 end))
 
@@ -1542,11 +1609,21 @@ task.spawn(function()
         if not isAlive or not ScreenGui.Parent then break end
         if setfpscap then pcall(setfpscap, 20) end
         pcall(function() Workspace.Terrain:Clear() end)
+        pcall(collectgarbage, "step", 500)
         if antiAfkEnabled then
             triggerAfkPulse()
         end
     end
 end)
+
+if AUTO_REJOIN_MINUTES and AUTO_REJOIN_MINUTES > 0 then
+    task.spawn(function()
+        task.wait(AUTO_REJOIN_MINUTES * 60)
+        if isAlive and ScreenGui.Parent then
+            executeAutoReconnect(true)
+        end
+    end)
+end
 
 obliterateWorldNow()
 silenceWindowFocusIdle()
