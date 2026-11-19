@@ -1,11 +1,13 @@
 -- =====================================================================
--- MzD KALB script - Ultra-Void v4.9 (Zero-Visuals + 3D Render Toggle)
+-- MzD KALB script - Ultra-Void v5.0 (Mass-Farm Low-CPU / Low-RAM)
 -- =====================================================================
 
-local AUTO_REJOIN_MINUTES = 0   -- Optioneel: zet bijv. op 180 (3 uur) voor RAM-reset in public servers
+local TARGET_FPS          = 12    -- 12 FPS + 1 lift/frame = 12 lifts/sec (> 9/sec server cap, ~40% minder CPU)
+local AUTO_REJOIN_MINUTES = 0     -- Optioneel voor public mass-farm: bijv. 180 (3 uur) voor schone RAM-reset
 local DISABLE_3D_AT_START = false -- Zet op true om 3D-rendering direct bij opstarten uit te zetten
+local DEEP_RAM_STRIP      = true  -- Verwijdert ~25k+ ongebruikte 3D-assets & verborgen menu's (veilig voor base)
 
-if setfpscap then pcall(setfpscap, 20) end
+if setfpscap then pcall(setfpscap, TARGET_FPS) end
 if not game:IsLoaded() then
     game.Loaded:Wait()
 end
@@ -42,18 +44,38 @@ local networkFolder = packagesFolder and (packagesFolder:FindFirstChild("Network
 
 local bonusRemote = networkFolder and networkFolder:FindFirstChild("rev_TaviMishkal")
 local weightEquipRemote = networkFolder and networkFolder:FindFirstChild("rev_WeightEquip")
-local vfxRemote = networkFolder and networkFolder:FindFirstChild("rev_VFX_UPD")
 
-local function disableVfxRemote()
-    if vfxRemote and getconnections then
-        pcall(function()
-            for _, conn in pairs(getconnections(vfxRemote.OnClientEvent)) do
-                if conn.Disable then pcall(conn.Disable, conn) end
-            end
-        end)
+local COSMETIC_REMOTES = {
+    "rev_VFX_UPD",
+    "rev_AnimData",
+    "rev_WeatherUpdate",
+    "rev_AddedWeather",
+    "rev_RemovedWeather",
+    "rev_LeaderboardUPD",
+    "rev_PlayMessage",
+    "rev_ChatMessageEvent",
+    "rev_NotificationUpdate",
+    "rev_TradeBoard_Post",
+    "rev_TradeBoard_Remove",
+    "rev_TradeBoard_Update",
+    "rev_IndexUpdate",
+    "rev_FriendsUPD"
+}
+
+local function disableCosmeticRemotes()
+    if not networkFolder or not getconnections then return end
+    for _, rName in ipairs(COSMETIC_REMOTES) do
+        local rem = networkFolder:FindFirstChild(rName)
+        if rem and rem:IsA("RemoteEvent") then
+            pcall(function()
+                for _, conn in pairs(getconnections(rem.OnClientEvent)) do
+                    if conn.Disable then pcall(conn.Disable, conn) end
+                end
+            end)
+        end
     end
 end
-disableVfxRemote()
+disableCosmeticRemotes()
 
 local uiName = "MzD_KALB_HUD"
 local existing = (gethui and gethui():FindFirstChild(uiName)) or CoreGui:FindFirstChild(uiName)
@@ -124,6 +146,7 @@ local idledHookedCount = 0
 
 local conns = {}
 local gymWatchConns = {}
+local containerWatchConns = {}
 local activeGymDespawnConn = nil
 local myIdledConn = nil
 
@@ -232,7 +255,7 @@ local function spawnPlatformUnderPlayer(char)
 end
 
 -- =====================================================================
--- TOTALE WERELD-, VFX-, TOOL-, BEACH GYM- & UI-SLOOP
+-- TOTALE WERELD-, VFX-, TOOL-, BEACH GYM- & RAM-SLOOP
 -- =====================================================================
 local protectedGymFloors = setmetatable({}, {__mode = "k"})
 
@@ -316,7 +339,6 @@ local function disableVisualNoise(inst)
             end
         end
 
-        -- Tool (Barbell) volledig onzichtbaar maken zonder delen te slopen
         if inst:FindFirstAncestorOfClass("Tool") then
             if inst:IsA("BasePart") then
                 inst.Transparency = 1
@@ -330,7 +352,6 @@ local function disableVisualNoise(inst)
             return
         end
 
-        -- Beach Gym decoratie (palmboom, props, neon) onzichtbaar maken, hoofdvloer vlak houden
         if isGymDescendant(inst) then
             if inst:IsA("BasePart") then
                 inst.CastShadow = false
@@ -390,6 +411,44 @@ local function disableUnneededClientExtras()
     pcall(function()
         UserSettings():GetService("UserGameSettings").MasterVolume = 0
     end)
+end
+
+local function stripDeepUnusedAssets()
+    if not DEEP_RAM_STRIP then return end
+
+    local rsObjects = ReplicatedStorage:FindFirstChild("Objects")
+    if rsObjects then
+        for _, name in ipairs({
+            "JamesGym", "ShonGym", "MikiGym",
+            "SpookyHouseKit", "SpookyHouseKit_v3",
+            "BoothSkinPreviews", "SkinTemplates",
+            "LuckyBlocks", "VFX", "Event"
+        }) do
+            local folder = rsObjects:FindFirstChild(name)
+            if folder then pcall(function() folder:ClearAllChildren() end) end
+        end
+    end
+
+    local eraAssets = ReplicatedStorage:FindFirstChild("EraTripAssets")
+    if eraAssets then
+        pcall(function() eraAssets:ClearAllChildren() end)
+    end
+
+    for _, guiName in ipairs({
+        "SeasonPass", "FallFrames", "MerchantGui",
+        "SkillTree", "MailGui", "FallUpgrades"
+    }) do
+        local g = pGui:FindFirstChild(guiName)
+        if g then pcall(function() g:ClearAllChildren() end) end
+    end
+
+    local frames = pGui:FindFirstChild("Frames")
+    if frames then
+        for _, frameName in ipairs({"KickStylesFrame", "Index", "Store", "RockyStore"}) do
+            local f = frames:FindFirstChild(frameName)
+            if f then pcall(function() f:ClearAllChildren() end) end
+        end
+    end
 end
 
 local function filterHudChild(child)
@@ -487,8 +546,48 @@ local function setupCleanVoidEnvironment()
 end
 
 -- =====================================================================
--- CHECK-FIRST EQUIP LOGICA & STILLE AUTO-LIFT
+-- O(1) GECACHETE EQUIP LOGICA & STILLE AUTO-LIFT
 -- =====================================================================
+local toolCacheDirty = true
+local cachedEquippedTool = nil
+
+local function hookToolContainer(container)
+    if not container then return end
+    table.insert(containerWatchConns, container.ChildAdded:Connect(function(child)
+        if child:IsA("Tool") then
+            toolCacheDirty = true
+        end
+    end))
+    table.insert(containerWatchConns, container.ChildRemoved:Connect(function(child)
+        if child:IsA("Tool") then
+            toolCacheDirty = true
+        end
+    end))
+end
+
+local function refreshToolWatchers(char)
+    for _, c in ipairs(containerWatchConns) do
+        pcall(function() c:Disconnect() end)
+    end
+    table.clear(containerWatchConns)
+
+    if char then hookToolContainer(char) end
+    local bp = player:FindFirstChildOfClass("Backpack")
+    if bp then
+        hookToolContainer(bp)
+    else
+        task.spawn(function()
+            local foundBp = player:WaitForChild("Backpack", 5)
+            if foundBp and isAlive then
+                hookToolContainer(foundBp)
+                toolCacheDirty = true
+            end
+        end)
+    end
+    cachedEquippedTool = nil
+    toolCacheDirty = true
+end
+
 local function getEquippedWeightTool(char)
     if not char then return nil, 999 end
     local bestTool = nil
@@ -611,13 +710,23 @@ local function stepAutoLift()
     if not isAlive or not autoLift then return end
 
     local char = player.Character
-    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not char then return end
+
+    -- Snelle O(1) cache-hit: geen table/string allocations nodig tijdens normaal liften
+    if not toolCacheDirty and cachedEquippedTool and cachedEquippedTool.Parent == char then
+        pcall(function() cachedEquippedTool:Activate() end)
+        return
+    end
+
+    local hum = char:FindFirstChildOfClass("Humanoid")
     if not hum or hum.Health <= 0 then return end
 
     local equippedTool, equippedRank = getEquippedWeightTool(char)
     local backpackTool, backpackRank = getBackpackWeightTool()
 
     if backpackTool and backpackRank < equippedRank then
+        cachedEquippedTool = nil
+        toolCacheDirty = true
         setActiveWeightLabel(backpackTool.Name .. " (EQUIPPING)")
         if tick() - lastEquipAttempt >= 0.45 then
             lastEquipAttempt = tick()
@@ -630,11 +739,15 @@ local function stepAutoLift()
     end
 
     if equippedTool then
+        cachedEquippedTool = equippedTool
+        toolCacheDirty = false
         setActiveWeightLabel(equippedTool.Name)
         pcall(function() equippedTool:Activate() end)
         return
     end
 
+    cachedEquippedTool = nil
+    toolCacheDirty = true
     setActiveWeightLabel("WACHT OP BARBELL...")
     if tick() - lastSpawnTick >= 1.5 then
         requestWeightFromGame()
@@ -989,10 +1102,11 @@ table.insert(conns, player.CharacterAdded:Connect(function(newChar)
     lastSpawnTick = tick()
     lastEquipAttempt = 0
     lastInventoryPull = 0
+    refreshToolWatchers(newChar)
     task.wait(0.2)
     if not isAlive then return end
 
-    disableVfxRemote()
+    disableCosmeticRemotes()
     disableUnneededClientExtras()
     silenceWindowFocusIdle()
     refreshIdledGuard()
@@ -1239,11 +1353,13 @@ end
 
 createStatusPill(0, "LIFT", autoLift, function(val)
     autoLift = val
+    toolCacheDirty = true
     if val then
         lastEquipAttempt = 0
         lastInventoryPull = 0
         stepAutoLift()
     else
+        cachedEquippedTool = nil
         local char = player.Character
         local hum = char and char:FindFirstChildOfClass("Humanoid")
         if hum and getEquippedWeightTool(char) then
@@ -1385,9 +1501,11 @@ local function activateBonusButton(btn)
                 conn:Fire()
                 firedSignal = true
             end
-            for _, conn in pairs(getconnections(btn.Activated)) do
-                conn:Fire()
-                firedSignal = true
+            if not firedSignal then
+                for _, conn in pairs(getconnections(btn.Activated)) do
+                    conn:Fire()
+                    firedSignal = true
+                end
             end
         end
     end)
@@ -1481,6 +1599,7 @@ CloseBtn.MouseButton1Click:Connect(function()
 
     for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
     for _, c in ipairs(gymWatchConns) do pcall(function() c:Disconnect() end) end
+    for _, c in ipairs(containerWatchConns) do pcall(function() c:Disconnect() end) end
 
     for _, list in pairs(bonusWatchConns) do
         for _, c in ipairs(list) do
@@ -1547,6 +1666,7 @@ local function obliterateWorldNow()
     setupCleanVoidEnvironment()
     disableUnneededClientExtras()
     stripAllGameGuis()
+    stripDeepUnusedAssets()
 
     local char = player.Character
     local protectedRoots = {
@@ -1704,10 +1824,12 @@ end))
 -- BACKGROUND LOOPS & DIRECT STARTEN
 -- =====================================================================
 task.spawn(function()
+    local lastLiftTick = 0
     while isAlive and ScreenGui.Parent do
-        task.wait(0.08)
+        task.wait()
         if not isAlive or not ScreenGui.Parent then break end
-        if autoLift then
+        if autoLift and (tick() - lastLiftTick) >= 0.06 then
+            lastLiftTick = tick()
             stepAutoLift()
         end
     end
@@ -1717,9 +1839,9 @@ task.spawn(function()
     while isAlive and ScreenGui.Parent do
         task.wait(55)
         if not isAlive or not ScreenGui.Parent then break end
-        if setfpscap then pcall(setfpscap, 20) end
+        if setfpscap then pcall(setfpscap, TARGET_FPS) end
         pcall(function() Workspace.Terrain:Clear() end)
-        pcall(collectgarbage, "step", 500)
+        pcall(collectgarbage, "step", 800)
         if antiAfkEnabled then
             triggerAfkPulse()
         end
@@ -1736,6 +1858,12 @@ if AUTO_REJOIN_MINUTES and AUTO_REJOIN_MINUTES > 0 then
 end
 
 obliterateWorldNow()
+task.delay(4, function()
+    if isAlive and ScreenGui.Parent then
+        stripDeepUnusedAssets()
+    end
+end)
+refreshToolWatchers(player.Character)
 silenceWindowFocusIdle()
 refreshIdledGuard()
 triggerAfkPulse()
