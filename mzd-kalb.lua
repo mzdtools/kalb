@@ -1,11 +1,13 @@
 -- =====================================================================
--- MzD KALB script - Ultra-Void v5.1 (Mass-Farm + Onzichtbare Vloer)
+-- MzD KALB script - Ultra-Void v5.2 (Watchdog Heartbeat + Autoexec Verify)
 -- =====================================================================
 
-local TARGET_FPS          = 12    -- 12 FPS + 1 lift/frame = 12 lifts/sec (> 9/sec server cap, ~40% minder CPU)
-local AUTO_REJOIN_MINUTES = 0     -- Optioneel voor public mass-farm: bijv. 180 (3 uur) voor schone RAM-reset
-local DISABLE_3D_AT_START = false -- Zet op true om 3D-rendering direct bij opstarten uit te zetten
-local DEEP_RAM_STRIP      = true  -- Verwijdert ~25k+ ongebruikte 3D-assets & verborgen menu's (veilig voor base)
+local TARGET_FPS                 = 12    -- 12 FPS + 1 lift/frame = 12 lifts/sec (> 9/sec server cap)
+local AUTO_REJOIN_MINUTES        = 0     -- Watchdog op Windows regelt nu de 3-uur herstart
+local DISABLE_3D_AT_START        = false -- Zet op true om 3D-rendering direct bij opstarten uit te zetten
+local DEEP_RAM_STRIP             = true  -- Verwijdert ~25k+ ongebruikte 3D-assets & verborgen menu's
+local USE_WATCHDOG_STATUS        = true  -- Schrijft heartbeat ("mzd_status.txt") voor MzD-Watchdog.ps1
+local USE_LUA_TELEPORT_RECONNECT = false -- Zet op false bij prive-servers (Watchdog doet reconnect!)
 
 if setfpscap then pcall(setfpscap, TARGET_FPS) end
 if not game:IsLoaded() then
@@ -32,6 +34,13 @@ while not player do
     player = Players.LocalPlayer
 end
 local pGui = player:WaitForChild("PlayerGui")
+
+local function writeWatchdogStatus(val)
+    if USE_WATCHDOG_STATUS and writefile then
+        pcall(writefile, "mzd_status.txt", tostring(val))
+    end
+end
+writeWatchdogStatus(os.time())
 
 local render3dEnabled = not DISABLE_3D_AT_START
 pcall(function()
@@ -737,7 +746,7 @@ local function stepAutoLift()
 end
 
 -- =====================================================================
--- SILENT ANTI-AFK SYSTEEM (ZERO CLICK, ZERO CURSOR STEAL, ZERO TOUCH)
+-- SILENT ANTI-AFK SYSTEEM + WATCHDOG HEARTBEAT
 -- =====================================================================
 local triggerAfkPulse
 local isPulsingAfk = false
@@ -823,7 +832,13 @@ triggerAfkPulse = function()
 end
 
 local isReconnecting = false
-local function executeAutoReconnect(forceNewServer)
+local isKickedOrDisconnected = false
+
+local function onDisconnectDetected(forceNewServer)
+    isKickedOrDisconnected = true
+    writeWatchdogStatus("KICK")
+
+    if not USE_LUA_TELEPORT_RECONNECT then return end
     if not isAlive or isReconnecting then return end
     if not forceNewServer and not autoReconnectEnabled then return end
     isReconnecting = true
@@ -853,16 +868,16 @@ end
 
 table.insert(conns, GuiService.ErrorMessageChanged:Connect(function(msg)
     if msg and msg ~= "" then
-        executeAutoReconnect(false)
+        onDisconnectDetected(false)
     end
 end))
 
 if GuiService:GetErrorMessage() ~= "" then
-    executeAutoReconnect(false)
+    onDisconnectDetected(false)
 end
 
 table.insert(conns, TeleportService.TeleportInitFailed:Connect(function(failedPlayer)
-    if failedPlayer == player and isAlive and (autoReconnectEnabled or isReconnecting) then
+    if failedPlayer == player and isAlive and USE_LUA_TELEPORT_RECONNECT and (autoReconnectEnabled or isReconnecting) then
         task.wait(2)
         pcall(function()
             TeleportService:Teleport(game.PlaceId, player)
@@ -875,11 +890,11 @@ task.spawn(function()
     local overlay = promptGui and promptGui:FindFirstChild("promptOverlay")
     if overlay and isAlive then
         if overlay:FindFirstChild("ErrorPrompt") then
-            executeAutoReconnect(false)
+            onDisconnectDetected(false)
         end
         table.insert(conns, overlay.ChildAdded:Connect(function(child)
             if child.Name == "ErrorPrompt" then
-                executeAutoReconnect(false)
+                onDisconnectDetected(false)
             end
         end))
     end
@@ -1392,7 +1407,6 @@ FooterStatsLabel.TextColor3 = NeonGreen
 FooterStatsLabel.TextSize = 11
 FooterStatsLabel.TextTruncate = Enum.TextTruncate.AtEnd
 
--- Soepel verslepen (muis + touch)
 local dragging = false
 local activeDragInput = nil
 local dragIsMouse = false
@@ -1430,7 +1444,7 @@ table.insert(conns, UserInputService.InputEnded:Connect(function(input)
 end))
 
 -- =====================================================================
--- HYBRID BONUS CLAIMER + MEMORY-SAFE WATCHER (GEEN NIL-LEK!)
+-- HYBRID BONUS CLAIMER + MEMORY-SAFE WATCHER
 -- =====================================================================
 local function clickScreenAtButton(btn)
     pcall(function()
@@ -1568,6 +1582,8 @@ end
 CloseBtn.MouseButton1Click:Connect(function()
     isAlive = false
     autoLift, autoBonus, autoBeachGym, antiAfkEnabled, autoReconnectEnabled = false, false, false, false, false
+
+    writeWatchdogStatus("PAUSED")
 
     pcall(function()
         RunService:Set3dRenderingEnabled(true)
@@ -1810,6 +1826,16 @@ end)
 
 task.spawn(function()
     while isAlive and ScreenGui.Parent do
+        task.wait(20)
+        if not isAlive or not ScreenGui.Parent then break end
+        if not isKickedOrDisconnected then
+            writeWatchdogStatus(os.time())
+        end
+    end
+end)
+
+task.spawn(function()
+    while isAlive and ScreenGui.Parent do
         task.wait(55)
         if not isAlive or not ScreenGui.Parent then break end
         if setfpscap then pcall(setfpscap, TARGET_FPS) end
@@ -1825,7 +1851,7 @@ if AUTO_REJOIN_MINUTES and AUTO_REJOIN_MINUTES > 0 then
     task.spawn(function()
         task.wait(AUTO_REJOIN_MINUTES * 60)
         if isAlive and ScreenGui.Parent then
-            executeAutoReconnect(true)
+            onDisconnectDetected(true)
         end
     end)
 end
