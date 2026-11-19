@@ -1,5 +1,5 @@
 -- =====================================================================
--- MzD KALB script - Ultra-Void v5.0 (Mass-Farm Low-CPU / Low-RAM)
+-- MzD KALB script - Ultra-Void v5.1 (Mass-Farm + Onzichtbare Vloer)
 -- =====================================================================
 
 local TARGET_FPS          = 12    -- 12 FPS + 1 lift/frame = 12 lifts/sec (> 9/sec server cap, ~40% minder CPU)
@@ -208,7 +208,7 @@ local function lockProperty(inst, propName, targetValue)
 end
 
 -- =====================================================================
--- TRAININGSPLATFORM BEHEER
+-- TRAININGSPLATFORM BEHEER (100% ONZICHTBAAR, WEL SOLIDE)
 -- =====================================================================
 local function removeSafePlatform()
     local existingPad = Workspace:FindFirstChild("MzD_SafePlatform")
@@ -235,20 +235,10 @@ local function spawnPlatformUnderPlayer(char)
     safePad.Position = padPos
     safePad.Anchored = true
     safePad.CanCollide = true
+    safePad.Transparency = 1
     safePad.CastShadow = false
     safePad.Material = Enum.Material.SmoothPlastic
-    safePad.Color = Color3.fromRGB(16, 42, 32)
-    safePad.TopSurface = Enum.SurfaceType.Smooth
-    safePad.BottomSurface = Enum.SurfaceType.Smooth
     safePad.Parent = Workspace
-
-    local border = Instance.new("SelectionBox")
-    border.Name = "MzD_SafeBorder"
-    border.Adornee = safePad
-    border.Color3 = Color3.fromRGB(0, 255, 145)
-    border.LineThickness = 0.04
-    border.SurfaceTransparency = 1
-    border.Parent = safePad
 
     hrp.AssemblyLinearVelocity = Vector3.zero
     return safePad
@@ -257,8 +247,6 @@ end
 -- =====================================================================
 -- TOTALE WERELD-, VFX-, TOOL-, BEACH GYM- & RAM-SLOOP
 -- =====================================================================
-local protectedGymFloors = setmetatable({}, {__mode = "k"})
-
 local function isGymDescendant(inst)
     local gm = inst:FindFirstAncestor("GymMachine")
     return gm ~= nil and gm.Parent ~= nil and gm.Parent.Name == "Debris"
@@ -277,7 +265,7 @@ end
 local function disableVisualNoise(inst)
     if not isAlive or not inst or not inst.Parent then return end
     if inst:IsDescendantOf(CoreGui) then return end
-    if inst.Name == "MzD_SafePlatform" or inst.Name == "MzD_SafeBorder" then return end
+    if inst.Name == "MzD_SafePlatform" then return end
 
     pcall(function()
         if inst:IsA("ParticleEmitter") then
@@ -354,16 +342,11 @@ local function disableVisualNoise(inst)
 
         if isGymDescendant(inst) then
             if inst:IsA("BasePart") then
+                inst.Transparency = 1
                 inst.CastShadow = false
                 inst.Material = Enum.Material.SmoothPlastic
+                lockProperty(inst, "Transparency", 1)
                 lockProperty(inst, "Material", Enum.Material.SmoothPlastic)
-                if protectedGymFloors[inst] then
-                    inst.Color = Color3.fromRGB(16, 42, 32)
-                    inst.Transparency = 0.25
-                else
-                    inst.Transparency = 1
-                    lockProperty(inst, "Transparency", 1)
-                end
             elseif inst:IsA("SpecialMesh") then
                 inst.TextureId = ""
             end
@@ -712,7 +695,6 @@ local function stepAutoLift()
     local char = player.Character
     if not char then return end
 
-    -- Snelle O(1) cache-hit: geen table/string allocations nodig tijdens normaal liften
     if not toolCacheDirty and cachedEquippedTool and cachedEquippedTool.Parent == char then
         pcall(function() cachedEquippedTool:Activate() end)
         return
@@ -921,7 +903,7 @@ end
 local function getBeachGymTargetCFrame(gymObj, char)
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return nil, nil end
+    if not hrp then return nil end
 
     local sandFloor = nil
     local bestFloorArea = 0
@@ -950,21 +932,18 @@ local function getBeachGymTargetCFrame(gymObj, char)
     local bboxCf = gymObj:IsA("Model") and gymObj:GetBoundingBox() or nil
     local centerX = refPart and refPart.Position.X or (bboxCf and bboxCf.Position.X)
     local centerZ = refPart and refPart.Position.Z or (bboxCf and bboxCf.Position.Z)
-    if not centerX or not centerZ then return nil, nil end
+    if not centerX or not centerZ then return nil end
 
     local floorTopY = sandFloor and (sandFloor.Position.Y + sandFloor.Size.Y * 0.5)
         or (refPart and (refPart.Position.Y - refPart.Size.Y * 0.5) or (bboxCf and bboxCf.Position.Y))
 
     local hipHeight = hum and hum.HipHeight or 2
     local standY = floorTopY + hipHeight + (hrp.Size.Y * 0.5) + 0.15
-    return CFrame.new(centerX + 2, standY, centerZ + 2), sandFloor
+    return CFrame.new(centerX + 2, standY, centerZ + 2)
 end
 
-local function stripBeachGymVisuals(gymObj, sandFloor)
+local function stripBeachGymVisuals(gymObj)
     if not gymObj then return end
-    if sandFloor then
-        protectedGymFloors[sandFloor] = true
-    end
     for _, desc in ipairs(gymObj:GetDescendants()) do
         disableVisualNoise(desc)
     end
@@ -1013,14 +992,14 @@ local function teleportToBeachGym(gymObj)
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     if not hrp then return end
 
-    local targetCFrame, sandFloor = getBeachGymTargetCFrame(gymObj, char)
+    local targetCFrame = getBeachGymTargetCFrame(gymObj, char)
     if not targetCFrame then return end
 
     handledGyms[gymObj] = true
     removeSafePlatform()
     activeBeachGym = gymObj
 
-    stripBeachGymVisuals(gymObj, sandFloor)
+    stripBeachGymVisuals(gymObj)
 
     hrp.Anchored = true
     hrp.CFrame = targetCFrame
@@ -1708,12 +1687,6 @@ local function obliterateWorldNow()
                 end
             end
         end
-    end
-
-    local existingGym = findBeachGym()
-    if existingGym then
-        local _, sandFloor = getBeachGymTargetCFrame(existingGym, char)
-        if sandFloor then protectedGymFloors[sandFloor] = true end
     end
 
     for _, desc in ipairs(Workspace:GetDescendants()) do
